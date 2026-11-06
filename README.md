@@ -174,6 +174,7 @@ They then print a report to stderr, between a `---- esphome wrapper ----` and a 
   esphome                     project  2026.10.2
   common                      project  34c2bc4  F:\GIT\esphome\esphome-ble-proxy\common
   UV_PYTHON                   project  <3.15,>=3.12.0
+  python                      found    3.14.8  C:\Users\<user>\AppData\Roaming\uv\python\cpython-3.14-windows-x86_64-none\python.exe
   ccache                      found    4.14.2  C:\ProgramData\chocolatey\bin\ccache.exe
   CCACHE_DIR                  env      F:\CACHE\ccache
   TMPDIR                      wrapper  F:\GIT\esphome\esphome-ble-proxy\.esphome\tmp
@@ -191,6 +192,7 @@ The report contains:
 - `esphome`: the `esphome==X.Y.Z` pin from `requirements.txt`. Without a pin, the wrappers warn that `uvx` will install the latest release.
 - `common`: the revision of the common checkout the wrapper runs from (`git describe --always --dirty`), and its path. This tells a project's pinned submodule apart from a separate clone of this repository.
 - `UV_PYTHON`: the Python request passed to `uvx`: the pinned release's `requires-python`, or `UV_PYTHON` when set; see [Python version](#python-version).
+- `python`: the version and path of the installed interpreter uv selects for that request (`uv python find`), which ESPHome and its ESP-IDF Python environment run on. When no installed Python matches, it reads `no match installed` and uv downloads one.
 - `ccache`: the version and path of the `ccache` on `PATH`. ESPHome caches compiler output only when it finds one, so the wrappers warn when it's missing.
 - `LongPathsEnabled` (Windows only): the system setting, after the effective IDF prefix. When it is off and the prefix plus the roughly 245 characters of toolchain paths below it exceed 260 characters, the wrappers warn and give the longest safe prefix length.
 - `CCACHE_DIR`, `TMPDIR`, `TMP`, `TEMP` (Windows only in the Bash wrapper), `UV_CACHE_DIR`, `ESPHOME_ESP_IDF_PREFIX`, `ESPHOME_SDK_NRF_PREFIX`, and `ESPHOME_ARDUINO8266_PREFIX`.

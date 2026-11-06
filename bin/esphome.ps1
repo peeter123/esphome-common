@@ -208,6 +208,20 @@ function Get-Ccache {
     "$($version -replace '^ccache version ', '')  $($command.Source)"
 }
 
+function Get-PythonInfo([string]$Request) {
+    # Version and path of the installed Python that uv selects for the request
+    # ($null: no request), or $null when none matches and uvx would download one.
+    # Tool runs ignore projects, so this does too.
+    if (-not (Get-Command uv -CommandType Application -ErrorAction SilentlyContinue)) { return $null }
+    $find = @('python', 'find', '--no-project', '--no-python-downloads')
+    if ($Request) { $find += $Request }
+    $path = & uv @find 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $path) { return $null }
+    $version = & uv @find --show-version 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $version) { $version = 'unknown' }
+    "$version  $path"
+}
+
 function Get-LongPathsEnabled {
     $key = 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem'
     (Get-ItemProperty $key -Name LongPathsEnabled -ErrorAction SilentlyContinue).LongPathsEnabled -eq 1
@@ -297,6 +311,12 @@ function Write-Environment([string]$ProjectVersion, [string]$CcacheSource, [obje
         }
         'default' { Write-WrapperValue 'UV_PYTHON' 'uv default' 'default' }
         default { Write-WrapperValue 'UV_PYTHON' $Python.Version $Python.Source }
+    }
+    $pythonInfo = Get-PythonInfo $Python.Version
+    if ($pythonInfo) {
+        Write-WrapperValue 'python' $pythonInfo 'found'
+    } else {
+        Write-WrapperValue 'python' 'no match installed; uv will download one' 'missing'
     }
     if ($ccache) {
         Write-WrapperValue 'ccache' $ccache 'found'

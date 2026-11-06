@@ -213,6 +213,19 @@ ccache_info() {
   printf '%s  %s\n' "${version:-unknown}" "$(native_path "$path")"
 }
 
+# Prints the version and path of the installed Python that uv selects for a
+# request (empty: no request), or fails when none matches and uvx would
+# download one. Tool runs ignore projects, so this does too.
+python_info() { # request
+  local path version
+  local -a find=(uv python find --no-project --no-python-downloads)
+  command -v uv >/dev/null 2>&1 || return 1
+  if [[ -n "$1" ]]; then find+=("$1"); fi
+  path="$("${find[@]}" 2>/dev/null)" || return 1
+  version="$("${find[@]}" --show-version 2>/dev/null)" || version=unknown
+  printf '%s  %s\n' "$version" "$path"
+}
+
 # Prints 1 or 0, or nothing when the registry can't be read.
 long_paths_enabled() {
   local key=/proc/registry/HKEY_LOCAL_MACHINE/SYSTEM/CurrentControlSet/Control/FileSystem/LongPathsEnabled
@@ -274,7 +287,7 @@ report_long_paths() { # idf_prefix
 }
 
 report_environment() { # project_version
-  local pin ccache
+  local pin ccache python_found
   pin="$(esphome_pin)"
   rule 'esphome wrapper'
   report project_version "$1" wrapper
@@ -292,6 +305,11 @@ report_environment() { # project_version
     default) report UV_PYTHON 'uv default' default ;;
     *) report UV_PYTHON "$python" "$python_source" ;;
   esac
+  if python_found="$(python_info "$python")"; then
+    report python "$python_found" found
+  else
+    report python 'no match installed; uv will download one' missing
+  fi
   if ccache="$(ccache_info)"; then
     report ccache "$ccache" found
   else
