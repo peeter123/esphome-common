@@ -1,0 +1,5 @@
+sensor:
+  - platform: debug
+    psram:
+      name: "PSRAM Free"
+      entity_category: diagnostic

@@ -1,0 +1,82 @@
+substitutions:
+  board_name: ${board}
+
+sensor:
+  - platform: wifi_signal
+    name: "WiFi Signal"
+    update_interval: 60s
+    icon: mdi:wifi
+
+  - platform: uptime
+    name: "Uptime"
+    update_interval: 60s
+    icon: mdi:clock-outline
+
+  - platform: debug
+    free:
+      name: "Heap Free"
+    block:
+      name: "Heap Largest Free Block"
+      entity_category: diagnostic
+    loop_time:
+      name: "Main Loop Time"
+      entity_category: diagnostic
+    cpu_frequency:
+      name: "CPU Frequency"
+      entity_category: diagnostic
+      unit_of_measurement: "MHz"
+      filters:
+        - multiply: 0.000001
+
+binary_sensor:
+  - platform: status
+    name: "Status"
+
+text_sensor:
+  - platform: version
+    name: "Version"
+    icon: mdi:cube-outline
+
+  - platform: template
+    name: "Board"
+    icon: mdi:developer-board
+    entity_category: diagnostic
+    disabled_by_default: false
+    lambda: return {"${board_name}"};
+    update_interval: 60s
+
+  - platform: wifi_info
+    ip_address:
+      id: wifi_ip_address
+      name: "IP Address"
+      icon: mdi:ip-network
+    ssid:
+      name: "WiFi SSID"
+      icon: mdi:wifi
+      entity_category: diagnostic
+    bssid:
+      name: "WiFi BSSID"
+      icon: mdi:access-point
+      entity_category: diagnostic
+    mac_address:
+      name: "WiFi MAC Address"
+      icon: mdi:identifier
+      entity_category: diagnostic
+
+  - platform: debug
+    device:
+      name: "Device Info"
+      icon: mdi:chip
+      entity_category: diagnostic
+    reset_reason:
+      name: "Reset Reason"
+
+time:
+  - platform: homeassistant
+    id: homeassistant_time
+
+button:
+  - platform: restart
+    name: Restart
+    icon: mdi:restart
+    entity_category: diagnostic

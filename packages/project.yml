@@ -1,0 +1,7 @@
+substitutions:
+  project_version: "dev"
+
+esphome:
+  project:
+    name: ${project_name}
+    version: ${project_version}

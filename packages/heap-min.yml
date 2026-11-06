@@ -1,0 +1,5 @@
+sensor:
+  - platform: debug
+    min_free:
+      name: "Heap Minimum Free"
+      entity_category: diagnostic

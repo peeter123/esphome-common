@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ -z "${CCACHE_DIR:-}" ]]; then
+  cache_dir="${HOME}/.ccache"
+  if [[ "${OS:-}" == Windows_NT ]]; then
+    cache_dir="$(cygpath -w "$cache_dir")"
+  fi
+  export CCACHE_DIR="$cache_dir"
+fi
+# Native Windows GCC takes its temp dir from TMP/TEMP (GetTempPath), not TMPDIR.
+# Always override: Cygwin login shells already point these at their own temp dirs.
+tmp_dir="${PWD}/.esphome/tmp"
+mkdir -p "$tmp_dir"
+if [[ "${OS:-}" == Windows_NT ]]; then
+  tmp_dir="$(cygpath -w "$tmp_dir")"
+  export TMP="$tmp_dir" TEMP="$tmp_dir"
+fi
+export TMPDIR="$tmp_dir"
+project_version="$(date +%Y.%m.%d)"
+# Builds saturate every core; run below normal so the desktop stays responsive.
+# On Windows, Cygwin/MSYS map nice 10 to BelowNormal, which native children inherit.
+exec nice -n 10 uvx --with-requirements requirements.txt esphome -s project_version "$project_version" "$@"
