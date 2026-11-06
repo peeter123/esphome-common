@@ -158,6 +158,37 @@ The compiler's own temporary files need one more step. Without `-save-temps`, `c
 
 Keep the IDF prefix short: toolchain paths nest about 245 characters below it, past Windows' 260-character limit unless long path support (`LongPathsEnabled`) is on. Keep the cache folder out of synced or backed-up project folders. Don't copy an old cache to the new location, because the IDF Python environments contain absolute paths; let the next build download again, then delete the old folders. To undo, set each variable to `$null` and remove the exclusion with `Remove-MpPreference -ExclusionPath`.
 
+## Reported environment
+
+Before starting ESPHome, both wrappers print the generated `project_version` and the locations that affect builds to stderr, between a `---- esphome wrapper ----` and a `---- esphome ----` line:
+
+```text
+---- esphome wrapper -----------------------------------------------------------
+  project_version             wrapper  2026.11.06
+  CCACHE_DIR                  env      F:\CACHE\ccache
+  TMPDIR                      wrapper  F:\GIT\esphome\esphome-ble-proxy\.esphome\tmp
+  ...
+  ESPHOME_SDK_NRF_PREFIX      default  C:\Users\<user>\AppData\Local\esphome\Cache\sdk-nrf
+---- esphome -------------------------------------------------------------------
+```
+
+The second column gives the source of each value:
+
+- `env` (green): set in the caller's environment.
+- `wrapper` (cyan): set by the wrapper.
+- `config` (yellow): `cache-dir` from a uv configuration file (`uv.toml` or `pyproject.toml`); applies to `UV_CACHE_DIR` only.
+- `default` (dim): unset. The value shown is the location ESPHome or uv uses instead.
+
+The wrappers report `CCACHE_DIR`, `TMPDIR`, `TMP`, `TEMP` (Windows only in the Bash wrapper), `UV_CACHE_DIR`, `ESPHOME_ESP_IDF_PREFIX`, `ESPHOME_SDK_NRF_PREFIX`, and `ESPHOME_ARDUINO8266_PREFIX`. The ESPHome defaults follow `platformdirs.user_cache_dir("esphome", appauthor=False)`:
+
+- Windows: `%LOCALAPPDATA%\esphome\Cache`
+- macOS: `~/Library/Caches/esphome`
+- Linux: `$XDG_CACHE_HOME/esphome` or `~/.cache/esphome`
+
+For the uv cache, the wrappers run `uv cache dir` from the project root, the same directory `uvx` runs from. The result reflects `UV_CACHE_DIR`, then `cache-dir` in a discovered uv configuration file, then uv's default: `%LOCALAPPDATA%\uv\cache` on Windows, and `$XDG_CACHE_HOME/uv` or `~/.cache/uv` elsewhere. When `uv` isn't on `PATH`, the wrappers show that default instead.
+
+Colour is used when stderr is a terminal. Set `FORCE_COLOR=1` to colour redirected output, such as the IDE run console, or set `NO_COLOR` to disable colour. Stdout is unchanged, so redirected `config` output contains only ESPHome's output.
+
 ## Process priority
 
 Both wrappers run ESPHome below normal priority, so a build that saturates every core leaves the desktop responsive; on an otherwise idle machine it takes about as long. The PowerShell wrapper sets its own process to `BelowNormal` and restores the previous priority when ESPHome exits, because `& .\common\bin\esphome.ps1` runs inside the calling shell. Windows child processes inherit `BelowNormal`, so `uvx`, Python, ninja, and the compilers all run at that priority. A PowerShell caller already at `Idle` or `BelowNormal` keeps that priority. The Bash wrapper uses `nice -n 10`, which adds to the caller's niceness; on Windows, Cygwin and Git Bash map it to `BelowNormal`.

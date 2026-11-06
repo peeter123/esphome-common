@@ -1,22 +1,139 @@
 #!/usr/bin/env bash
+# Runs ESPHome through uvx, pinned by requirements.txt in the current directory.
+# Run from a project root; arguments are forwarded to ESPHome unchanged, and
+# ESPHome's exit code is returned.
 set -euo pipefail
-if [[ -z "${CCACHE_DIR:-}" ]]; then
-  cache_dir="${HOME}/.ccache"
-  if [[ "${OS:-}" == Windows_NT ]]; then
+
+# ---- Environment ----------------------------------------------------------
+
+is_windows() { [[ "${OS:-}" == Windows_NT ]]; }
+
+# Sets CCACHE_DIR when unset, and ccache_source to where it came from.
+set_ccache_dir() {
+  if [[ -n "${CCACHE_DIR:-}" ]]; then
+    ccache_source=env
+    return
+  fi
+  ccache_source=wrapper
+  local cache_dir="${HOME}/.ccache"
+  if is_windows; then
     cache_dir="$(cygpath -w "$cache_dir")"
   fi
   export CCACHE_DIR="$cache_dir"
-fi
+}
+
 # Native Windows GCC takes its temp dir from TMP/TEMP (GetTempPath), not TMPDIR.
 # Always override: Cygwin login shells already point these at their own temp dirs.
-tmp_dir="${PWD}/.esphome/tmp"
-mkdir -p "$tmp_dir"
-if [[ "${OS:-}" == Windows_NT ]]; then
-  tmp_dir="$(cygpath -w "$tmp_dir")"
-  export TMP="$tmp_dir" TEMP="$tmp_dir"
-fi
-export TMPDIR="$tmp_dir"
-project_version="$(date +%Y.%m.%d)"
+set_temp_dir() {
+  local tmp_dir="${PWD}/.esphome/tmp"
+  mkdir -p "$tmp_dir"
+  if is_windows; then
+    tmp_dir="$(cygpath -w "$tmp_dir")"
+    export TMP="$tmp_dir" TEMP="$tmp_dir"
+  fi
+  export TMPDIR="$tmp_dir"
+}
+
+project_version() { date +%Y.%m.%d; }
+
+# ---- Tool cache locations -------------------------------------------------
+
+# Sets esphome_cache, uv_default, and the path separator sep to the locations
+# ESPHome (platformdirs, appauthor=False) and uv use when unset.
+set_cache_defaults() {
+  if is_windows; then
+    esphome_cache="${LOCALAPPDATA:-}\esphome\Cache" uv_default="${LOCALAPPDATA:-}\uv\cache" sep='\'
+    return
+  fi
+  local xdg_cache="${XDG_CACHE_HOME:-$HOME/.cache}"
+  if [[ "$(uname -s)" == Darwin ]]; then
+    esphome_cache="$HOME/Library/Caches/esphome"
+  else
+    esphome_cache="$xdg_cache/esphome"
+  fi
+  uv_default="$xdg_cache/uv" sep=/
+}
+
+# Sets uv_cache and uv_source. Asks uv which cache uvx will use: UV_CACHE_DIR,
+# then cache-dir from uv.toml or pyproject.toml (discovered from this
+# directory), then the platform default.
+resolve_uv_cache() {
+  uv_cache="$(uv --color never cache dir 2>/dev/null)" || uv_cache=''
+  if [[ -n "${UV_CACHE_DIR:-}" ]]; then
+    uv_source=env
+  elif [[ -n "$uv_cache" && "${uv_cache,,}" != "${uv_default,,}" ]]; then
+    uv_source=config
+  else
+    uv_source=default
+  fi
+  if [[ -z "$uv_cache" ]]; then uv_cache="${UV_CACHE_DIR:-$uv_default}"; fi
+}
+
+# ---- Report ---------------------------------------------------------------
+# Written to stderr so stdout (e.g. 'config' output) stays clean. Colour marks
+# the source of each value: environment, wrapper, uv config, or default.
+
+init_colors() {
+  c_env='' c_wrapper='' c_config='' c_default='' c_rule='' c_off=''
+  if [[ -z "${NO_COLOR:-}" ]] && { [[ -n "${FORCE_COLOR:-}" ]] || [[ -t 2 ]]; }; then
+    c_env=$'\e[32m' c_wrapper=$'\e[36m' c_config=$'\e[33m' c_default=$'\e[2m'
+    c_rule=$'\e[1m' c_off=$'\e[0m'
+  fi
+}
+
+rule() { # title
+  local line="---- $1 --------------------------------------------------------------------------------"
+  printf '%s%s%s\n' "$c_rule" "${line:0:80}" "$c_off" >&2
+}
+
+report() { # name value source
+  local color="c_$3"
+  printf '%s  %-27s %-8s %s%s\n' "${!color}" "$1" "$3" "$2" "$c_off" >&2
+}
+
+report_env_or_default() { # name default
+  if [[ -n "${!1:-}" ]]; then report "$1" "${!1}" env; else report "$1" "$2" default; fi
+}
+
+report_environment() { # project_version
+  rule 'esphome wrapper'
+  report project_version "$1" wrapper
+  report CCACHE_DIR "$CCACHE_DIR" "$ccache_source"
+  report TMPDIR "$TMPDIR" wrapper
+  if is_windows; then
+    report TMP "$TMP" wrapper
+    report TEMP "$TEMP" wrapper
+  fi
+  report UV_CACHE_DIR "$uv_cache" "$uv_source"
+  report_env_or_default ESPHOME_ESP_IDF_PREFIX "${esphome_cache}${sep}idf"
+  report_env_or_default ESPHOME_SDK_NRF_PREFIX "${esphome_cache}${sep}sdk-nrf"
+  report_env_or_default ESPHOME_ARDUINO8266_PREFIX "${esphome_cache}${sep}arduino8266"
+  rule esphome
+}
+
+# ---- ESPHome --------------------------------------------------------------
+
+# Replaces the wrapper process, so ESPHome's exit code is the wrapper's.
 # Builds saturate every core; run below normal so the desktop stays responsive.
 # On Windows, Cygwin/MSYS map nice 10 to BelowNormal, which native children inherit.
-exec nice -n 10 uvx --with-requirements requirements.txt esphome -s project_version "$project_version" "$@"
+run_esphome() { # project_version args...
+  local version="$1"
+  shift
+  exec nice -n 10 uvx --with-requirements requirements.txt esphome -s project_version "$version" "$@"
+}
+
+# ---- Main -----------------------------------------------------------------
+
+main() {
+  local version
+  version="$(project_version)"
+  set_ccache_dir
+  set_temp_dir
+  set_cache_defaults
+  resolve_uv_cache
+  init_colors
+  report_environment "$version"
+  run_esphome "$version" "$@"
+}
+
+main "$@"
