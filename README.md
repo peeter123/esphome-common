@@ -158,28 +158,49 @@ The compiler's own temporary files need one more step. Without `-save-temps`, `c
 
 Keep the IDF prefix short: toolchain paths nest about 245 characters below it, past Windows' 260-character limit unless long path support (`LongPathsEnabled`) is on. Keep the cache folder out of synced or backed-up project folders. Don't copy an old cache to the new location, because the IDF Python environments contain absolute paths; let the next build download again, then delete the old folders. To undo, set each variable to `$null` and remove the exclusion with `Remove-MpPreference -ExclusionPath`.
 
-## Reported environment
+## Wrapper help, checks, and report
 
-Before starting ESPHome, both wrappers print the generated `project_version` and the locations that affect builds to stderr, between a `---- esphome wrapper ----` and a `---- esphome ----` line:
+`common/bin/esphome --help` (or `esphome.ps1 --help`) prints the wrapper's own help, followed by ESPHome's. Running a wrapper without arguments does the same. Help for a subcommand, such as `compile --help`, goes straight to ESPHome.
+
+Before starting ESPHome, both wrappers check that `requirements.txt` exists in the current directory and that `uvx` is on `PATH`. If either is missing, they stop with a message and exit code 2 or 127 respectively.
+
+They then print a report to stderr, between a `---- esphome wrapper ----` and a `---- esphome ----` line. After ESPHome exits, a closing line gives its exit code and the elapsed time, in red when the code isn't 0:
 
 ```text
 ---- esphome wrapper -----------------------------------------------------------
   project_version             wrapper  2026.11.06
+  esphome                     project  2026.10.2
+  common                      project  34c2bc4  F:\GIT\esphome\esphome-ble-proxy\common
+  ccache                      found    4.14.2  C:\ProgramData\chocolatey\bin\ccache.exe
   CCACHE_DIR                  env      F:\CACHE\ccache
   TMPDIR                      wrapper  F:\GIT\esphome\esphome-ble-proxy\.esphome\tmp
   ...
+  ESPHOME_ESP_IDF_PREFIX      env      F:\CACHE\esphome-idf
+  LongPathsEnabled            system   1
   ESPHOME_SDK_NRF_PREFIX      default  C:\Users\<user>\AppData\Local\esphome\Cache\sdk-nrf
 ---- esphome -------------------------------------------------------------------
+...
+---- esphome exited 0 after 3m 12s ---------------------------------------------
 ```
 
-The second column gives the source of each value:
+The report contains:
+
+- `esphome`: the `esphome==X.Y.Z` pin from `requirements.txt`. Without a pin, the wrappers warn that `uvx` will install the latest release.
+- `common`: the revision of the common checkout the wrapper runs from (`git describe --always --dirty`), and its path. This tells a project's pinned submodule apart from the canonical sibling clone.
+- `ccache`: the version and path of the `ccache` on `PATH`. ESPHome caches compiler output only when it finds one, so the wrappers warn when it's missing.
+- `LongPathsEnabled` (Windows only): the system setting, after the effective IDF prefix. When it is off and the prefix plus the roughly 245 characters of toolchain paths below it exceed 260 characters, the wrappers warn and give the longest safe prefix length.
+- `CCACHE_DIR`, `TMPDIR`, `TMP`, `TEMP` (Windows only in the Bash wrapper), `UV_CACHE_DIR`, `ESPHOME_ESP_IDF_PREFIX`, `ESPHOME_SDK_NRF_PREFIX`, and `ESPHOME_ARDUINO8266_PREFIX`.
+
+The second column gives the source of each value, or the result of a check:
 
 - `env` (green): set in the caller's environment.
 - `wrapper` (cyan): set by the wrapper.
 - `config` (yellow): `cache-dir` from a uv configuration file (`uv.toml` or `pyproject.toml`); applies to `UV_CACHE_DIR` only.
 - `default` (dim): unset. The value shown is the location ESPHome or uv uses instead.
+- `project` and `system`: read from the project, the common checkout, or Windows.
+- `found` (green) and `missing` (red): tool checks. A warning line starting with `!` follows a problem.
 
-The wrappers report `CCACHE_DIR`, `TMPDIR`, `TMP`, `TEMP` (Windows only in the Bash wrapper), `UV_CACHE_DIR`, `ESPHOME_ESP_IDF_PREFIX`, `ESPHOME_SDK_NRF_PREFIX`, and `ESPHOME_ARDUINO8266_PREFIX`. The ESPHome defaults follow `platformdirs.user_cache_dir("esphome", appauthor=False)`:
+The ESPHome defaults follow `platformdirs.user_cache_dir("esphome", appauthor=False)`:
 
 - Windows: `%LOCALAPPDATA%\esphome\Cache`
 - macOS: `~/Library/Caches/esphome`
@@ -188,6 +209,8 @@ The wrappers report `CCACHE_DIR`, `TMPDIR`, `TMP`, `TEMP` (Windows only in the B
 For the uv cache, the wrappers run `uv cache dir` from the project root, the same directory `uvx` runs from. The result reflects `UV_CACHE_DIR`, then `cache-dir` in a discovered uv configuration file, then uv's default: `%LOCALAPPDATA%\uv\cache` on Windows, and `$XDG_CACHE_HOME/uv` or `~/.cache/uv` elsewhere. When `uv` isn't on `PATH`, the wrappers show that default instead.
 
 Colour is used when stderr is a terminal. Set `FORCE_COLOR=1` to colour redirected output, such as the IDE run console, or set `NO_COLOR` to disable colour. Stdout is unchanged, so redirected `config` output contains only ESPHome's output.
+
+To print the closing line, the Bash wrapper runs ESPHome as a child process instead of replacing itself with `exec`. Ctrl+C reaches ESPHome through the terminal's process group as before, and the wrapper waits for ESPHome to exit before reporting. A signal sent only to the wrapper's own process ID, such as `kill <pid>`, no longer reaches ESPHome. If the PowerShell wrapper is interrupted, its closing line reads `esphome interrupted`.
 
 ## Process priority
 

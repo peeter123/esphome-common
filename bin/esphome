@@ -1,12 +1,69 @@
 #!/usr/bin/env bash
 # Runs ESPHome through uvx, pinned by requirements.txt in the current directory.
 # Run from a project root; arguments are forwarded to ESPHome unchanged, and
-# ESPHome's exit code is returned.
+# ESPHome's exit code is returned. See usage(), or run with --help.
 set -euo pipefail
+
+# ---- Help -----------------------------------------------------------------
+
+usage() {
+  local name
+  name="$(basename "$0")"
+  cat <<EOF
+Usage: $name [ESPHOME ARGUMENTS...]
+
+Runs ESPHome through uvx, at the version pinned in requirements.txt in the
+current directory. Run it from a firmware project root. All arguments are
+passed to ESPHome unchanged, and ESPHome's exit code is returned. Without
+arguments, or with -h or --help first, this help is followed by ESPHome's.
+
+Before starting ESPHome, the wrapper:
+  - checks that requirements.txt exists and that uvx is on PATH
+  - passes -s project_version YYYY.MM.DD with today's date; add your own
+    -s project_version <version> to override it
+  - sets CCACHE_DIR to ~/.ccache when it is unset
+  - points TMPDIR (and on Windows TMP and TEMP) at .esphome/tmp in the project
+  - runs ESPHome at nice 10 (below normal priority on Windows)
+  - prints a report to stderr: the ESPHome pin, the common revision, ccache,
+    and each cache location, tagged with where its value came from
+After ESPHome exits, it prints the exit code and the elapsed time.
+
+Report tags:
+  env       set in the caller's environment
+  wrapper   set by this wrapper
+  config    cache-dir from a uv configuration file (uv.toml, pyproject.toml)
+  default   unset; ESPHome or uv uses the location shown
+  project   read from the project or the common checkout
+  found, missing, system
+            tool and system checks; a warning follows a problem
+
+Environment:
+  CCACHE_DIR                  compiler cache (default: ~/.ccache)
+  UV_CACHE_DIR                uv cache holding the ESPHome installation
+  ESPHOME_ESP_IDF_PREFIX      ESP-IDF frameworks and toolchains
+  ESPHOME_SDK_NRF_PREFIX      nRF52 SDK
+  ESPHOME_ARDUINO8266_PREFIX  ESP8266 Arduino core
+  FORCE_COLOR                 colour the report even when stderr is redirected
+  NO_COLOR                    never colour the report
+
+Examples:
+  $name config device.yml
+  $name compile device.yml
+  $name -s project_version 2026.10.06.1 compile device.yml
+
+See common/README.md for details.
+
+EOF
+}
 
 # ---- Environment ----------------------------------------------------------
 
 is_windows() { [[ "${OS:-}" == Windows_NT ]]; }
+
+# Prints a path in the platform's native form (Windows paths under Cygwin/MSYS).
+native_path() {
+  if is_windows; then cygpath -w "$1"; else printf '%s\n' "$1"; fi
+}
 
 # Sets CCACHE_DIR when unset, and ccache_source to where it came from.
 set_ccache_dir() {
@@ -15,11 +72,8 @@ set_ccache_dir() {
     return
   fi
   ccache_source=wrapper
-  local cache_dir="${HOME}/.ccache"
-  if is_windows; then
-    cache_dir="$(cygpath -w "$cache_dir")"
-  fi
-  export CCACHE_DIR="$cache_dir"
+  export CCACHE_DIR
+  CCACHE_DIR="$(native_path "${HOME}/.ccache")"
 }
 
 # Native Windows GCC takes its temp dir from TMP/TEMP (GetTempPath), not TMPDIR.
@@ -27,14 +81,42 @@ set_ccache_dir() {
 set_temp_dir() {
   local tmp_dir="${PWD}/.esphome/tmp"
   mkdir -p "$tmp_dir"
+  tmp_dir="$(native_path "$tmp_dir")"
   if is_windows; then
-    tmp_dir="$(cygpath -w "$tmp_dir")"
     export TMP="$tmp_dir" TEMP="$tmp_dir"
   fi
   export TMPDIR="$tmp_dir"
 }
 
 project_version() { date +%Y.%m.%d; }
+
+# ---- Preflight and project ------------------------------------------------
+
+# Returns 0 when ESPHome can start, otherwise the exit code to stop with.
+preflight() {
+  if [[ ! -f requirements.txt ]]; then
+    error "requirements.txt not found in $(native_path "$PWD"); run the wrapper from a project root."
+    return 2
+  fi
+  if ! command -v uvx >/dev/null 2>&1; then
+    error 'uvx not found on PATH; install uv (https://docs.astral.sh/uv/).'
+    return 127
+  fi
+}
+
+esphome_pin() {
+  sed -nE 's/^[[:space:]]*esphome[[:space:]]*==[[:space:]]*([^[:space:];#]+).*/\1/p' requirements.txt |
+    sed -n 1p
+}
+
+# The common checkout this wrapper belongs to: the project's pinned submodule or
+# the canonical sibling clone.
+common_revision() {
+  local common_dir revision
+  common_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  revision="$(git -C "$common_dir" describe --always --dirty --abbrev=7 2>/dev/null)" || revision=unknown
+  printf '%s  %s\n' "$revision" "$(native_path "$common_dir")"
+}
 
 # ---- Tool cache locations -------------------------------------------------
 
@@ -69,35 +151,100 @@ resolve_uv_cache() {
   if [[ -z "$uv_cache" ]]; then uv_cache="${UV_CACHE_DIR:-$uv_default}"; fi
 }
 
+# ---- Tool and system checks -----------------------------------------------
+
+# ESP-IDF toolchain paths nest about this many characters below the IDF prefix
+# (see README), against Windows' 260-character MAX_PATH without long paths.
+idf_path_depth=245
+max_path=260
+
+# Prints ccache's version and path. ESPHome uses ccache only when a working
+# ccache is on PATH; CCACHE_DIR alone does not enable it.
+ccache_info() {
+  local path version
+  path="$(command -v ccache 2>/dev/null)" || return 1
+  version="$("$path" --version 2>/dev/null | sed -n '1s/^ccache version //p')" || version=''
+  printf '%s  %s\n' "${version:-unknown}" "$(native_path "$path")"
+}
+
+# Prints 1 or 0, or nothing when the registry can't be read.
+long_paths_enabled() {
+  local key=/proc/registry/HKEY_LOCAL_MACHINE/SYSTEM/CurrentControlSet/Control/FileSystem/LongPathsEnabled
+  if [[ -r "$key" ]]; then od -An -tu4 "$key" | tr -d '[:space:]'; fi
+}
+
 # ---- Report ---------------------------------------------------------------
 # Written to stderr so stdout (e.g. 'config' output) stays clean. Colour marks
 # the source of each value: environment, wrapper, uv config, or default.
 
 init_colors() {
-  c_env='' c_wrapper='' c_config='' c_default='' c_rule='' c_off=''
+  c_env='' c_wrapper='' c_config='' c_default='' c_project='' c_system=''
+  c_found='' c_missing='' c_warning='' c_rule='' c_failed='' c_off=''
   if [[ -z "${NO_COLOR:-}" ]] && { [[ -n "${FORCE_COLOR:-}" ]] || [[ -t 2 ]]; }; then
     c_env=$'\e[32m' c_wrapper=$'\e[36m' c_config=$'\e[33m' c_default=$'\e[2m'
-    c_rule=$'\e[1m' c_off=$'\e[0m'
+    c_found=$'\e[32m' c_missing=$'\e[31m' c_warning=$'\e[31m'
+    c_rule=$'\e[1m' c_failed=$'\e[1;31m' c_off=$'\e[0m'
   fi
 }
 
-rule() { # title
-  local line="---- $1 --------------------------------------------------------------------------------"
-  printf '%s%s%s\n' "$c_rule" "${line:0:80}" "$c_off" >&2
+line() { # text color
+  local color="c_$2"
+  printf '%s%s%s\n' "${!color}" "$1" "$c_off" >&2
+}
+
+rule() { # title [color]
+  local text="---- $1 --------------------------------------------------------------------------------"
+  line "${text:0:80}" "${2:-rule}"
 }
 
 report() { # name value source
-  local color="c_$3"
-  printf '%s  %-27s %-8s %s%s\n' "${!color}" "$1" "$3" "$2" "$c_off" >&2
+  line "$(printf '  %-27s %-8s %s' "$1" "$3" "$2")" "$3"
 }
 
+warn() { line "  ! $1" warning; }
+
+error() { line "esphome wrapper: $1" failed; }
+
+# Reports a variable or its default, and sets effective_value to the one used.
 report_env_or_default() { # name default
-  if [[ -n "${!1:-}" ]]; then report "$1" "${!1}" env; else report "$1" "$2" default; fi
+  if [[ -n "${!1:-}" ]]; then
+    effective_value="${!1}"
+    report "$1" "$effective_value" env
+  else
+    effective_value="$2"
+    report "$1" "$effective_value" default
+  fi
+}
+
+report_long_paths() { # idf_prefix
+  is_windows || return 0
+  local enabled deepest
+  enabled="$(long_paths_enabled)"
+  report LongPathsEnabled "${enabled:-unknown}" system
+  deepest=$(( ${#1} + idf_path_depth ))
+  if [[ "$enabled" == 0 ]] && (( deepest > max_path )); then
+    warn "ESP-IDF paths reach about $deepest characters below this IDF prefix, past the $max_path-character limit. Enable LongPathsEnabled or use a prefix of at most $(( max_path - idf_path_depth )) characters."
+  fi
 }
 
 report_environment() { # project_version
+  local pin ccache
+  pin="$(esphome_pin)"
   rule 'esphome wrapper'
   report project_version "$1" wrapper
+  if [[ -n "$pin" ]]; then
+    report esphome "$pin" project
+  else
+    report esphome 'not pinned' missing
+    warn 'requirements.txt has no esphome==X.Y.Z line; uvx will use the latest release.'
+  fi
+  report common "$(common_revision)" project
+  if ccache="$(ccache_info)"; then
+    report ccache "$ccache" found
+  else
+    report ccache 'not on PATH' missing
+    warn 'ESPHome builds without a compiler cache; CCACHE_DIR has no effect.'
+  fi
   report CCACHE_DIR "$CCACHE_DIR" "$ccache_source"
   report TMPDIR "$TMPDIR" wrapper
   if is_windows; then
@@ -106,34 +253,74 @@ report_environment() { # project_version
   fi
   report UV_CACHE_DIR "$uv_cache" "$uv_source"
   report_env_or_default ESPHOME_ESP_IDF_PREFIX "${esphome_cache}${sep}idf"
+  report_long_paths "$effective_value"
   report_env_or_default ESPHOME_SDK_NRF_PREFIX "${esphome_cache}${sep}sdk-nrf"
   report_env_or_default ESPHOME_ARDUINO8266_PREFIX "${esphome_cache}${sep}arduino8266"
   rule esphome
 }
 
+# Wall-clock time in tenths of a second. EPOCHREALTIME uses the locale's
+# decimal separator.
+now_tenths() {
+  local now="${EPOCHREALTIME/,/.}"
+  printf '%s\n' $(( ${now%.*} * 10 + 10#${now#*.} / 100000 ))
+}
+
+format_duration() { # tenths
+  if (( $1 < 600 )); then
+    printf '%d.%ds\n' $(( $1 / 10 )) $(( $1 % 10 ))
+  else
+    printf '%dm %02ds\n' $(( $1 / 600 )) $(( $1 / 10 % 60 ))
+  fi
+}
+
+report_exit() { # status tenths
+  local elapsed
+  elapsed="$(format_duration "$2")"
+  if (( $1 == 0 )); then
+    rule "esphome exited 0 after $elapsed"
+  else
+    rule "esphome exited $1 after $elapsed" failed
+  fi
+}
+
 # ---- ESPHome --------------------------------------------------------------
 
-# Replaces the wrapper process, so ESPHome's exit code is the wrapper's.
+# Runs ESPHome as a child, not with exec, so the wrapper can report its exit.
+# Ctrl+C reaches ESPHome through the process group; the INT trap keeps the
+# wrapper alive until ESPHome has exited. Children reset trapped signals to
+# their defaults, so ESPHome still handles SIGINT itself.
 # Builds saturate every core; run below normal so the desktop stays responsive.
 # On Windows, Cygwin/MSYS map nice 10 to BelowNormal, which native children inherit.
 run_esphome() { # project_version args...
-  local version="$1"
+  local version="$1" status=0
   shift
-  exec nice -n 10 uvx --with-requirements requirements.txt esphome -s project_version "$version" "$@"
+  trap ':' INT
+  nice -n 10 uvx --with-requirements requirements.txt esphome -s project_version "$version" "$@" ||
+    status=$?
+  trap - INT
+  return "$status"
 }
 
 # ---- Main -----------------------------------------------------------------
 
 main() {
-  local version
+  local version status=0 start
+  local -a args=("$@")
+  if (( ${#args[@]} == 0 )); then args=(--help); fi
+  if [[ "${args[0]}" == -h || "${args[0]}" == --help ]]; then usage; fi
+  init_colors
+  preflight || exit $?
   version="$(project_version)"
   set_ccache_dir
   set_temp_dir
   set_cache_defaults
   resolve_uv_cache
-  init_colors
   report_environment "$version"
-  run_esphome "$version" "$@"
+  start="$(now_tenths)"
+  run_esphome "$version" "${args[@]}" || status=$?
+  report_exit "$status" $(( $(now_tenths) - start ))
+  exit "$status"
 }
 
 main "$@"
