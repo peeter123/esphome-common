@@ -22,6 +22,8 @@ Before starting ESPHome, the wrapper:
   - passes -s project_version YYYY.MM.DD with today's date; add your own
     -s project_version <version> to override it
   - sets CCACHE_DIR to ~/.ccache when it is unset
+  - runs ESPHome on a Python within the pinned release's requires-python
+    (read from PyPI once per pin), or on \$UV_PYTHON when it is set
   - points TMPDIR (and on Windows TMP and TEMP) at .esphome/tmp in the project
   - runs ESPHome at nice 10 (below normal priority on Windows)
   - prints a report to stderr: the ESPHome pin, the common revision, ccache,
@@ -39,6 +41,8 @@ Report tags:
 
 Environment:
   CCACHE_DIR                  compiler cache (default: ~/.ccache)
+  UV_PYTHON                   Python for ESPHome and ESP-IDF (default: the
+                              pinned release's requires-python)
   UV_CACHE_DIR                uv cache holding the ESPHome installation
   ESPHOME_ESP_IDF_PREFIX      ESP-IDF frameworks and toolchains
   ESPHOME_SDK_NRF_PREFIX      nRF52 SDK
@@ -86,6 +90,48 @@ set_temp_dir() {
     export TMP="$tmp_dir" TEMP="$tmp_dir"
   fi
   export TMPDIR="$tmp_dir"
+}
+
+# uvx runs ESPHome on the newest Python uv finds: uv ignores the upper bound of
+# a package's requires-python, and tool runs ignore .python-version files.
+# ESPHome creates the ESP-IDF Python environment from its own interpreter, so a
+# Python newer than the release supports can fail the first build. The wrapper
+# passes the pinned release's requires-python as the --python request instead;
+# uv then picks the newest matching interpreter, downloading one if needed.
+# The value is cached per pin, so PyPI is asked only when the pin changes.
+requires_python_cache=.esphome/requires-python
+
+# Prints requires-python for an ESPHome version from PyPI, or fails.
+fetch_requires_python() { # version
+  command -v curl >/dev/null 2>&1 || return 1
+  curl -fsS --max-time 10 "https://pypi.org/pypi/esphome/$1/json" 2>/dev/null |
+    grep -o '"requires_python":"[^"]*"' |
+    sed -n '1s/^"requires_python":"\(.*\)"$/\1/p' | grep .
+}
+
+# Sets python (the --python request; empty leaves the choice to uv) and
+# python_source: UV_PYTHON from the caller, else the pin's requires-python.
+set_python() {
+  local pin spec
+  python='' python_source=default
+  if [[ -n "${UV_PYTHON:-}" ]]; then
+    python="$UV_PYTHON" python_source=env
+    return
+  fi
+  pin="$(esphome_pin)"
+  [[ -n "$pin" ]] || return 0
+  if [[ -f "$requires_python_cache" ]]; then
+    spec="$(awk -F '\t' -v pin="$pin" '$1 == pin { sub(/\r$/, "", $2); print $2; exit }' "$requires_python_cache")"
+  fi
+  if [[ -z "${spec:-}" ]] && spec="$(fetch_requires_python "$pin")"; then
+    mkdir -p "$(dirname "$requires_python_cache")"
+    printf '%s\t%s\n' "$pin" "$spec" >"$requires_python_cache"
+  fi
+  if [[ -n "${spec:-}" ]]; then
+    python="$spec" python_source=project
+  else
+    python_source=missing
+  fi
 }
 
 project_version() { date +%Y.%m.%d; }
@@ -239,6 +285,13 @@ report_environment() { # project_version
     warn 'requirements.txt has no esphome==X.Y.Z line; uvx will use the latest release.'
   fi
   report common "$(common_revision)" project
+  case "$python_source" in
+    missing)
+      report UV_PYTHON unknown missing
+      warn "Could not read ESPHome $pin's requires-python from PyPI; uvx will pick the newest Python. Set UV_PYTHON to choose one." ;;
+    default) report UV_PYTHON 'uv default' default ;;
+    *) report UV_PYTHON "$python" "$python_source" ;;
+  esac
   if ccache="$(ccache_info)"; then
     report ccache "$ccache" found
   else
@@ -294,9 +347,11 @@ report_exit() { # status tenths
 # On Windows, Cygwin/MSYS map nice 10 to BelowNormal, which native children inherit.
 run_esphome() { # project_version args...
   local version="$1" status=0
+  local -a python_args=()
   shift
+  if [[ -n "$python" ]]; then python_args=(--python "$python"); fi
   trap ':' INT
-  nice -n 10 uvx --with-requirements requirements.txt esphome -s project_version "$version" "$@" ||
+  nice -n 10 uvx ${python_args[@]+"${python_args[@]}"} --with-requirements requirements.txt esphome -s project_version "$version" "$@" ||
     status=$?
   trap - INT
   return "$status"
@@ -314,6 +369,7 @@ main() {
   version="$(project_version)"
   set_ccache_dir
   set_temp_dir
+  set_python
   set_cache_defaults
   resolve_uv_cache
   report_environment "$version"

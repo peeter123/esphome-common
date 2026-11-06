@@ -173,6 +173,7 @@ They then print a report to stderr, between a `---- esphome wrapper ----` and a 
   project_version             wrapper  2026.11.06
   esphome                     project  2026.10.2
   common                      project  34c2bc4  F:\GIT\esphome\esphome-ble-proxy\common
+  UV_PYTHON                   project  <3.15,>=3.12.0
   ccache                      found    4.14.2  C:\ProgramData\chocolatey\bin\ccache.exe
   CCACHE_DIR                  env      F:\CACHE\ccache
   TMPDIR                      wrapper  F:\GIT\esphome\esphome-ble-proxy\.esphome\tmp
@@ -189,6 +190,7 @@ The report contains:
 
 - `esphome`: the `esphome==X.Y.Z` pin from `requirements.txt`. Without a pin, the wrappers warn that `uvx` will install the latest release.
 - `common`: the revision of the common checkout the wrapper runs from (`git describe --always --dirty`), and its path. This tells a project's pinned submodule apart from a separate clone of this repository.
+- `UV_PYTHON`: the Python request passed to `uvx`: the pinned release's `requires-python`, or `UV_PYTHON` when set; see [Python version](#python-version).
 - `ccache`: the version and path of the `ccache` on `PATH`. ESPHome caches compiler output only when it finds one, so the wrappers warn when it's missing.
 - `LongPathsEnabled` (Windows only): the system setting, after the effective IDF prefix. When it is off and the prefix plus the roughly 245 characters of toolchain paths below it exceed 260 characters, the wrappers warn and give the longest safe prefix length.
 - `CCACHE_DIR`, `TMPDIR`, `TMP`, `TEMP` (Windows only in the Bash wrapper), `UV_CACHE_DIR`, `ESPHOME_ESP_IDF_PREFIX`, `ESPHOME_SDK_NRF_PREFIX`, and `ESPHOME_ARDUINO8266_PREFIX`.
@@ -213,6 +215,16 @@ For the uv cache, the wrappers run `uv cache dir` from the project root, the sam
 Colour is used when stderr is a terminal. Set `FORCE_COLOR=1` to colour redirected output, such as the IDE run console, or set `NO_COLOR` to disable colour. Stdout is unchanged, so redirected `config` output contains only ESPHome's output.
 
 To print the closing line, the Bash wrapper runs ESPHome as a child process instead of replacing itself with `exec`. Ctrl+C reaches ESPHome through the terminal's process group as before, and the wrapper waits for ESPHome to exit before reporting. A signal sent only to the wrapper's own process ID, such as `kill <pid>`, no longer reaches ESPHome. If the PowerShell wrapper is interrupted, its closing line reads `esphome interrupted`.
+
+## Python version
+
+`uvx` runs ESPHome on the newest Python that uv finds, because uv ignores the upper bound of a package's `requires-python` and tool runs ignore `.python-version` files. ESPHome then creates the ESP-IDF Python environment from that same interpreter. When that Python is newer than the release supports, the first build fails while installing ESP-IDF's dependencies. For example, on Python 3.15, ESP-IDF 5.5's `esp-idf-kconfig` needs `windows-curses`, which has no 3.15 wheels.
+
+Both wrappers therefore pass the pinned release's own `requires-python` (for example `<3.15,>=3.12.0` for 2026.10.2) to `uvx --python`. uv picks the newest installed Python within that range, and downloads one when none matches. The wrappers read the range from PyPI (`https://pypi.org/pypi/esphome/<version>/json`) and cache it in `.esphome/requires-python`, so PyPI is asked only when the pin changes, and later runs work offline.
+
+- Set `UV_PYTHON` to choose a version yourself, such as `UV_PYTHON=3.13`. The report then shows it with the `env` tag.
+- When the range can't be read (offline before the first run of a pin, or `curl` missing for the Bash wrapper), the report shows `UV_PYTHON  missing  unknown` with a warning, and uv picks the Python.
+- A failed ESP-IDF Python environment is rebuilt on the next build, because ESPHome records the Python version it was built with.
 
 ## Process priority
 

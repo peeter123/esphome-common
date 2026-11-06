@@ -20,6 +20,8 @@ Before starting ESPHome, the wrapper:
   - passes -s project_version YYYY.MM.DD with today's date; add your own
     -s project_version <version> to override it
   - sets CCACHE_DIR to ~/.ccache when it is unset
+  - runs ESPHome on a Python within the pinned release's requires-python
+    (read from PyPI once per pin), or on `$env:UV_PYTHON when it is set
   - points TMPDIR, TMP and TEMP at .esphome/tmp in the project
   - lowers its priority to below normal for the duration of the build
   - prints a report to stderr: the ESPHome pin, the common revision, ccache,
@@ -37,6 +39,8 @@ Report tags:
 
 Environment:
   CCACHE_DIR                  compiler cache (default: ~/.ccache)
+  UV_PYTHON                   Python for ESPHome and ESP-IDF (default: the
+                              pinned release's requires-python)
   UV_CACHE_DIR                uv cache holding the ESPHome installation
   ESPHOME_ESP_IDF_PREFIX      ESP-IDF frameworks and toolchains
   ESPHOME_SDK_NRF_PREFIX      nRF52 SDK
@@ -57,6 +61,49 @@ See common/README.md for details.
 #endregion
 
 #region Environment
+
+# uvx runs ESPHome on the newest Python uv finds: uv ignores the upper bound of
+# a package's requires-python, and tool runs ignore .python-version files.
+# ESPHome creates the ESP-IDF Python environment from its own interpreter, so a
+# Python newer than the release supports can fail the first build. The wrapper
+# passes the pinned release's requires-python as the --python request instead;
+# uv then picks the newest matching interpreter, downloading one if needed.
+# The value is cached per pin, so PyPI is asked only when the pin changes.
+$script:RequiresPythonCache = '.esphome\requires-python'
+
+function Get-RequiresPython([string]$Version) {
+    # requires-python for an ESPHome version from PyPI, or $null.
+    try {
+        $info = Invoke-RestMethod -TimeoutSec 10 -Uri "https://pypi.org/pypi/esphome/$Version/json"
+        if ($info.info.requires_python) { return [string]$info.info.requires_python }
+    } catch { }
+    $null
+}
+
+function Get-Python {
+    # The --python request and its source: UV_PYTHON from the caller, else the
+    # pin's requires-python. Passed to uvx rather than set in the environment,
+    # because '& esphome.ps1' runs in the caller's process.
+    if ($env:UV_PYTHON) { return [pscustomobject]@{ Version = $env:UV_PYTHON; Source = 'env' } }
+    $pin = Get-EsphomePin
+    if (-not $pin) { return [pscustomobject]@{ Version = $null; Source = 'default' } }
+    $spec = $null
+    if (Test-Path $script:RequiresPythonCache) {
+        foreach ($line in Get-Content $script:RequiresPythonCache) {
+            $fields = $line -split "`t", 2
+            if ($fields.Count -eq 2 -and $fields[0] -eq $pin) { $spec = $fields[1]; break }
+        }
+    }
+    if (-not $spec) {
+        $spec = Get-RequiresPython $pin
+        if ($spec) {
+            New-Item -ItemType Directory -Force (Split-Path $script:RequiresPythonCache) | Out-Null
+            Set-Content -Path $script:RequiresPythonCache -Value "$pin`t$spec"
+        }
+    }
+    if ($spec) { return [pscustomobject]@{ Version = $spec; Source = 'project' } }
+    [pscustomobject]@{ Version = $null; Source = 'missing' }
+}
 
 function Set-CcacheDir {
     # Returns where CCACHE_DIR came from: the caller's environment or the wrapper.
@@ -229,7 +276,7 @@ function Write-LongPathCheck([string]$IdfPrefix) {
     }
 }
 
-function Write-Environment([string]$ProjectVersion, [string]$CcacheSource) {
+function Write-Environment([string]$ProjectVersion, [string]$CcacheSource, [object]$Python) {
     $esphomeCache = Get-EsphomeCacheRoot
     $uvCache = Get-UvCache
     $pin = Get-EsphomePin
@@ -243,6 +290,14 @@ function Write-Environment([string]$ProjectVersion, [string]$CcacheSource) {
         Write-WrapperWarning 'requirements.txt has no esphome==X.Y.Z line; uvx will use the latest release.'
     }
     Write-WrapperValue 'common' (Get-CommonRevision) 'project'
+    switch ($Python.Source) {
+        'missing' {
+            Write-WrapperValue 'UV_PYTHON' 'unknown' 'missing'
+            Write-WrapperWarning "Could not read ESPHome $pin's requires-python from PyPI; uvx will pick the newest Python. Set UV_PYTHON to choose one."
+        }
+        'default' { Write-WrapperValue 'UV_PYTHON' 'uv default' 'default' }
+        default { Write-WrapperValue 'UV_PYTHON' $Python.Version $Python.Source }
+    }
     if ($ccache) {
         Write-WrapperValue 'ccache' $ccache 'found'
     } else {
@@ -285,7 +340,7 @@ function Write-Footer([object]$ExitCode, [TimeSpan]$Duration) {
 
 #region ESPHome
 
-function Invoke-Esphome([string]$ProjectVersion, [object[]]$Arguments) {
+function Invoke-Esphome([string]$ProjectVersion, [string]$Python, [object[]]$Arguments) {
     # Leaves ESPHome's exit code in $LASTEXITCODE; returning it would mix it into
     # ESPHome's stdout, which a function passes through as its output.
     # Builds saturate every core; run below normal so the desktop stays responsive.
@@ -297,7 +352,8 @@ function Invoke-Esphome([string]$ProjectVersion, [object[]]$Arguments) {
         $process.PriorityClass = 'BelowNormal'
     }
     try {
-        uvx --with-requirements requirements.txt esphome -s project_version $ProjectVersion @Arguments
+        $pythonArgs = if ($Python) { @('--python', $Python) } else { @() }
+        uvx @pythonArgs --with-requirements requirements.txt esphome -s project_version $ProjectVersion @Arguments
     } finally {
         $process.PriorityClass = $originalPriority
     }
@@ -314,12 +370,13 @@ $preflight = Test-Preflight
 if ($preflight) { exit $preflight }
 $ccacheSource = Set-CcacheDir
 Set-TempDir
+$python = Get-Python
 $projectVersion = Get-ProjectVersion
-Write-Environment $projectVersion $ccacheSource
+Write-Environment $projectVersion $ccacheSource $python
 $stopwatch = [Diagnostics.Stopwatch]::StartNew()
 $exitCode = $null
 try {
-    Invoke-Esphome $projectVersion $esphomeArgs
+    Invoke-Esphome $projectVersion $python.Version $esphomeArgs
     $exitCode = $LASTEXITCODE
 } finally {
     Write-Footer $exitCode $stopwatch.Elapsed
