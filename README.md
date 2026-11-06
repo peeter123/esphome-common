@@ -10,6 +10,8 @@ Shared packages and tooling for the `esphome-*` firmware project family. Sibling
 - `packages/heap-fragmentation.yml` — optional heap fragmentation percentage, for ESP32 or ESP8266 consumers.
 - `packages/psram-free.yml` — optional free PSRAM, for ESP32 consumers with a configured `psram` component.
 - `bin/esphome` / `bin/esphome.ps1` — wrapper scripts that run ESPHome via `uvx`, pinned to whatever version is in the calling project's `requirements.txt`. No local venv, no activation step, works the same on Windows/macOS/Linux as long as `uv` is installed.
+- `docs/esphome-upgrades/` — one review per ESPHome minor release (breaking changes, C++ API changes, patch fixes), written once and checked against each project when its pin is raised.
+- `.claude/skills/esphome-update/` — Claude Code skill that runs the ESPHome update procedure in `AGENTS.md` for a consuming project.
 
 ## Memory and network diagnostics
 
@@ -186,7 +188,7 @@ They then print a report to stderr, between a `---- esphome wrapper ----` and a 
 The report contains:
 
 - `esphome`: the `esphome==X.Y.Z` pin from `requirements.txt`. Without a pin, the wrappers warn that `uvx` will install the latest release.
-- `common`: the revision of the common checkout the wrapper runs from (`git describe --always --dirty`), and its path. This tells a project's pinned submodule apart from the canonical sibling clone.
+- `common`: the revision of the common checkout the wrapper runs from (`git describe --always --dirty`), and its path. This tells a project's pinned submodule apart from a separate clone of this repository.
 - `ccache`: the version and path of the `ccache` on `PATH`. ESPHome caches compiler output only when it finds one, so the wrappers warn when it's missing.
 - `LongPathsEnabled` (Windows only): the system setting, after the effective IDF prefix. When it is off and the prefix plus the roughly 245 characters of toolchain paths below it exceed 260 characters, the wrappers warn and give the longest safe prefix length.
 - `CCACHE_DIR`, `TMPDIR`, `TMP`, `TEMP` (Windows only in the Bash wrapper), `UV_CACHE_DIR`, `ESPHOME_ESP_IDF_PREFIX`, `ESPHOME_SDK_NRF_PREFIX`, and `ESPHOME_ARDUINO8266_PREFIX`.
@@ -248,12 +250,11 @@ Projects that do not include `packages/project.yml` keep their own metadata. Any
 
 ## Adding or migrating a project
 
-1. From the project root, add this repository as the `common` submodule from its sibling clone and record the relative URL in `.gitmodules`:
+1. From the project root, add this repository as the `common` submodule from its published URL:
    ```sh
-   git -c protocol.file.allow=always submodule add <path-to-esphome-common> common
-   git config -f .gitmodules submodule.common.url ../esphome-common
+   git submodule add https://github.com/peeter123/esphome-common.git common
    ```
-   Git blocks local-path submodule transports unless `protocol.file.allow` permits them. Git resolves the relative URL against the project's default remote, or against its working directory when it has none. In a project with a remote, keep `submodule.common.url` in `.git/config` pointing at the reachable sibling clone and do not run `git submodule sync`, which overwrites it.
+   To develop against a local clone of this repository instead, point the project's own `.git/config` at it with `git config submodule.common.url <path-to-esphome-common>`, keep the published URL in `.gitmodules`, and do not run `git submodule sync`, which overwrites the local setting. Git blocks local-path submodule transports unless allowed, so prefix the submodule commands with `git -c protocol.file.allow=always`.
 2. Pin ESPHome in `requirements.txt` (`esphome==X.Y.Z`).
 3. In `packages/base.yml`, define `friendly_name`, `device_name`, `device_description`, and `project_name`, and include the shared packages:
    ```yaml
@@ -266,7 +267,7 @@ Projects that do not include `packages/project.yml` keep their own metadata. Any
 4. Delete the project's local `packages/common.yml` and any local `esphome.project` block, after checking for duplicate entities or IDs.
 5. Set `board_name` in every firmware entrypoint.
 6. Delete `Makefile`, `shell.bat`, and any GitHub Actions workflows under `.github/workflows/` that are not in use; `common/bin/esphome` is the build entrypoint. Remove `.venv` from `.gitignore` when no `.venv` directory exists.
-7. In the project's `README.md`, document setup with `git -c protocol.file.allow=always submodule update --init --recursive` and point build instructions at this README instead of duplicating them.
+7. In the project's `README.md`, document setup with `git submodule update --init --recursive` and point build instructions at this README instead of duplicating them.
 8. Validate every entrypoint with `common/bin/esphome config <entrypoint>`.
 
 ## Adding something new to this shared repo
