@@ -17,6 +17,8 @@ arguments, or with -h or --help first, this help is followed by ESPHome's.
 
 Before starting ESPHome, the wrapper:
   - checks that requirements.txt exists and that uvx is on PATH
+  - checks that an esphome-common remote package entry in the project's YAML
+    names the commit of the project's common checkout
   - passes -s project_version YYYY.MM.DD with today's date; add your own
     -s project_version <version> to override it
   - sets CCACHE_DIR to ~/.ccache when it is unset
@@ -138,7 +140,7 @@ function Test-Preflight {
         Write-WrapperError 'uvx not found on PATH; install uv (https://docs.astral.sh/uv/).'
         return 127
     }
-    0
+    Test-CommonPin
 }
 
 function Get-EsphomePin {
@@ -158,6 +160,81 @@ function Get-CommonRevision {
     }
     if (-not $revision) { $revision = 'unknown' }
     "$revision  $commonDir"
+}
+
+#endregion
+
+#region Remote consumer pin
+# A remote consumer (AGENTS.md, "Remote consumers") takes the shared packages as
+# an esphome-common remote package entry whose url: line is followed by its
+# ref: line. That ref must be the commit of the project's common checkout, so
+# the remote packages and the local ones (credentials.yml, these wrappers) come
+# from one commit.
+
+$script:CommonRef = $null
+
+function Get-CommonRefs {
+    # Each esphome-common remote package entry in the project's YAML (root files
+    # and packages/): the file and the ref on the line after its url: line, with
+    # an empty ref when that line is not a ref: line.
+    $files = @(Get-ChildItem -File -Path . | Where-Object Extension -in '.yml', '.yaml' | Sort-Object Name)
+    if (Test-Path -PathType Container 'packages') {
+        $files += @(Get-ChildItem -File -Recurse -Path 'packages' |
+            Where-Object Extension -in '.yml', '.yaml' | Sort-Object FullName)
+    }
+    $urlPattern = '^\s*url:\s*https://github\.com/[^/\s]+/esphome-common(\.git)?\s*(#.*)?$'
+    foreach ($file in $files) {
+        $lines = @(Get-Content -LiteralPath $file.FullName | ForEach-Object { $_ -replace '["'']', '' })
+        $name = (Resolve-Path -Relative -LiteralPath $file.FullName) -replace '^\.[\\/]', '' -replace '\\', '/'
+        for ($i = 0; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -notmatch $urlPattern) { continue }
+            $ref = ''
+            if ($i + 1 -lt $lines.Count -and $lines[$i + 1] -match '^\s*ref:\s*([^\s#]*)') { $ref = $Matches[1] }
+            [pscustomobject]@{ File = $name; Ref = $ref }
+        }
+    }
+}
+
+function Get-CommonCheckout {
+    # The commit and path of the project's common checkout, or of the checkout
+    # this wrapper runs from when the project has none; $null when neither is a
+    # git checkout.
+    $dir = if (Test-Path 'common/.git') { 'common' } else { Split-Path (Split-Path $PSCommandPath) }
+    if (-not (Test-Path (Join-Path $dir '.git'))) { return $null }
+    $commit = git -C $dir rev-parse HEAD 2>$null
+    if ($LASTEXITCODE -or -not $commit) { return $null }
+    [pscustomobject]@{ Commit = $commit; Path = (Resolve-Path $dir).Path }
+}
+
+function Test-CommonPin {
+    # Returns 0 when every esphome-common remote package entry names the common
+    # checkout's commit, otherwise 2 after an error message.
+    $refs = @(Get-CommonRefs)
+    if (-not $refs.Count) { return 0 }
+    $checkout = $null
+    if (Get-Command git -ErrorAction SilentlyContinue) { $checkout = Get-CommonCheckout }
+    if (-not $checkout) {
+        Write-WrapperError ('an esphome-common remote package entry needs a common checkout to compare its ref ' +
+            'with; run git submodule update --init.')
+        return 2
+    }
+    foreach ($entry in $refs) {
+        if (-not $entry.Ref) {
+            Write-WrapperError "$($entry.File): the esphome-common remote package entry has no ref: line right after its url: line."
+            return 2
+        }
+        if ($entry.Ref -cnotmatch '^[0-9a-f]{40}$') {
+            Write-WrapperError "$($entry.File): the esphome-common ref '$($entry.Ref)' is not a full 40-character commit SHA."
+            return 2
+        }
+        if ($entry.Ref -ne $checkout.Commit) {
+            Write-WrapperError ("$($entry.File): the esphome-common ref $($entry.Ref) differs from the common checkout " +
+                "at $($checkout.Commit) ($($checkout.Path)). Point both at the same commit.")
+            return 2
+        }
+        $script:CommonRef = $entry
+    }
+    0
 }
 
 #endregion
@@ -304,6 +381,9 @@ function Write-Environment([string]$ProjectVersion, [string]$CcacheSource, [obje
         Write-WrapperWarning 'requirements.txt has no esphome==X.Y.Z line; uvx will use the latest release.'
     }
     Write-WrapperValue 'common' (Get-CommonRevision) 'project'
+    if ($script:CommonRef) {
+        Write-WrapperValue 'common ref' "$($script:CommonRef.Ref.Substring(0, 7))  $($script:CommonRef.File)" 'project'
+    }
     switch ($Python.Source) {
         'missing' {
             Write-WrapperValue 'UV_PYTHON' 'unknown' 'missing'

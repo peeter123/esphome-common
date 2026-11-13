@@ -9,6 +9,7 @@ Shared packages and tooling for the `esphome-*` firmware project family. Sibling
 - `packages/heap-min.yml` — optional minimum free heap since boot, for ESP32 or LibreTiny consumers on ESPHome 2026.2.0 or later.
 - `packages/heap-fragmentation.yml` — optional heap fragmentation percentage, for ESP32 or ESP8266 consumers.
 - `packages/psram-free.yml` — optional free PSRAM, for ESP32 consumers with a configured `psram` component.
+- `packages/credentials.yml` — the API and OTA encryption keys, the Wi-Fi network and the fallback hotspot password from `secrets.yaml`, for the entrypoints of a [remote consumer](#remote-consumers).
 - `bin/esphome` / `bin/esphome.ps1` — wrapper scripts that run ESPHome via `uvx`, pinned to whatever version is in the calling project's `requirements.txt`. No local venv, no activation step, works the same on Windows/macOS/Linux as long as `uv` is installed.
 - `docs/esphome-upgrades/` — one review per ESPHome minor release (breaking changes, C++ API changes, patch fixes), written once and checked against each project when its pin is raised.
 - `.claude/skills/esphome-update/` — Claude Code skill that runs the ESPHome update procedure in `AGENTS.md` for a consuming project.
@@ -108,6 +109,36 @@ packages:
   ble: !include ble.yml
 ```
 
+## Remote consumers
+
+A project whose packages should also work from the ESPHome dashboard without cloning, as remote (`github://` or `url:`) packages, takes the shared packages from GitHub instead of from `common/`. ESPHome fetches a remote package as a shallow clone without submodules, so `common/` is empty there. Its `packages/base.yml` pins this repository to the commit of the `common` gitlink, as a full SHA:
+
+```yaml
+packages:
+  common:
+    url: https://github.com/peeter123/esphome-common
+    ref: bcb7f07b707779f3875f7d9def22d11856e7b32e   # the commit of the common gitlink
+    refresh: never
+    files:
+      - packages/common.yml
+      - packages/project.yml
+      - packages/heap-min.yml
+      - packages/heap-fragmentation.yml
+```
+
+Keep the `ref:` line directly after the `url:` line: both wrappers read the entry line by line and stop with exit code 2 when the ref is not the full commit of the project's `common/` checkout. The base package reads no secret: it declares `api:`, an `ota:` list with one `- platform: esphome` entry with `id: ota_esphome`, and `wifi:` with `id: wifi_id` and `ap: {}`. Each local entrypoint adds the credentials:
+
+```yaml
+packages:
+  base: !include packages/base.yml
+  credentials: !include common/packages/credentials.yml
+  device_base: !include boards/m5stack-atoms3-lite.yml
+```
+
+A dashboard configuration that takes the project's packages remotely supplies its own API key and Wi-Fi credentials instead. Packages refer to the project's own components by a path relative to the package file (`source: ../../components` from `packages/<group>/`), which ESPHome 2026.9 and later resolve from the same checkout as the YAML, locally and in a remote clone.
+
+This repository's `master` is never rewritten, because remote consumers pin its commits. To update a remote consumer, push the commit here first, then move its gitlink and its `ref:` together. See "Remote consumers" in `AGENTS.md` for the full rules.
+
 ## Usage (from a consuming project)
 
 Run these from the project root (the directory containing that project's `requirements.txt` and `.yml` config), not from inside `common/`:
@@ -164,7 +195,7 @@ Keep the IDF prefix short: toolchain paths nest about 245 characters below it, p
 
 `common/bin/esphome --help` (or `esphome.ps1 --help`) prints the wrapper's own help, followed by ESPHome's. Running a wrapper without arguments does the same. Help for a subcommand, such as `compile --help`, goes straight to ESPHome.
 
-Before starting ESPHome, both wrappers check that `requirements.txt` exists in the current directory and that `uvx` is on `PATH`. If either is missing, they stop with a message and exit code 2 or 127 respectively.
+Before starting ESPHome, both wrappers check that `requirements.txt` exists in the current directory and that `uvx` is on `PATH`. If either is missing, they stop with a message and exit code 2 or 127 respectively. In a [remote consumer](#remote-consumers), they also compare each esphome-common remote package entry in the project's root YAML files and `packages/` with the commit of the project's `common/` checkout, or of their own checkout when the project has none. An entry with another commit, an abbreviated SHA or no `ref:` line right after its `url:` line stops them with a message and exit code 2.
 
 They then print a report to stderr, between a `---- esphome wrapper ----` and a `---- esphome ----` line. After ESPHome exits, a closing line gives its exit code and the elapsed time, in red when the code isn't 0:
 
@@ -191,6 +222,7 @@ The report contains:
 
 - `esphome`: the `esphome==X.Y.Z` pin from `requirements.txt`. Without a pin, the wrappers warn that `uvx` will install the latest release.
 - `common`: the revision of the common checkout the wrapper runs from (`git describe --always --dirty`), and its path. This tells a project's pinned submodule apart from a separate clone of this repository.
+- `common ref` (remote consumers only): the commit of the esphome-common remote package entry, which the check above found equal to the `common/` checkout, and the file that holds it.
 - `UV_PYTHON`: the Python request passed to `uvx`: the pinned release's `requires-python`, or `UV_PYTHON` when set; see [Python version](#python-version).
 - `python`: the version and path of the installed interpreter uv selects for that request (`uv python find`), which ESPHome and its ESP-IDF Python environment run on. When no installed Python matches, it reads `no match installed` and uv downloads one.
 - `ccache`: the version and path of the `ccache` on `PATH`. ESPHome caches compiler output only when it finds one, so the wrappers warn when it's missing.

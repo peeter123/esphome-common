@@ -19,6 +19,8 @@ arguments, or with -h or --help first, this help is followed by ESPHome's.
 
 Before starting ESPHome, the wrapper:
   - checks that requirements.txt exists and that uvx is on PATH
+  - checks that an esphome-common remote package entry in the project's YAML
+    names the commit of the project's common checkout
   - passes -s project_version YYYY.MM.DD with today's date; add your own
     -s project_version <version> to override it
   - sets CCACHE_DIR to ~/.ccache when it is unset
@@ -148,6 +150,7 @@ preflight() {
     error 'uvx not found on PATH; install uv (https://docs.astral.sh/uv/).'
     return 127
   fi
+  check_common_pin
 }
 
 esphome_pin() {
@@ -162,6 +165,96 @@ common_revision() {
   common_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
   revision="$(git -C "$common_dir" describe --always --dirty --abbrev=7 2>/dev/null)" || revision=unknown
   printf '%s  %s\n' "$revision" "$(native_path "$common_dir")"
+}
+
+# ---- Remote consumer pin --------------------------------------------------
+# A remote consumer (AGENTS.md, "Remote consumers") takes the shared packages as
+# an esphome-common remote package entry whose url: line is followed by its
+# ref: line. That ref must be the commit of the project's common checkout, so
+# the remote packages and the local ones (credentials.yml, these wrappers) come
+# from one commit.
+
+common_ref_file='' common_ref=''
+
+# Prints "file<TAB>ref" for each esphome-common remote package entry in the
+# project's YAML (root files and packages/), with an empty ref when the line
+# after url: is not a ref: line.
+common_refs() {
+  local -a files=()
+  local file
+  for file in ./*.yml ./*.yaml; do
+    if [[ -f "$file" ]]; then files+=("${file#./}"); fi
+  done
+  if [[ -d packages ]]; then
+    while IFS= read -r -d '' file; do files+=("$file"); done < <(
+      find packages -type f \( -name '*.yml' -o -name '*.yaml' \) -print0 | sort -z
+    )
+  fi
+  (( ${#files[@]} )) || return 0
+  awk -v q="'" '
+    function clean(text) { sub(/\r$/, "", text); gsub(/"/, "", text); gsub(q, "", text); return text }
+    function unmatched() { if (pending) print pending_file "\t"; pending = 0 }
+    FNR == 1 { unmatched() }
+    pending {
+      line = clean($0)
+      if (line ~ /^[ \t]*ref:/) {
+        sub(/^[ \t]*ref:[ \t]*/, "", line)
+        sub(/[ \t]*#.*$/, "", line)
+        sub(/[ \t]+$/, "", line)
+        print pending_file "\t" line
+        pending = 0
+        next
+      }
+      unmatched()
+    }
+    clean($0) ~ /^[ \t]*url:[ \t]*https:\/\/github\.com\/[^\/ \t]+\/esphome-common(\.git)?[ \t]*(#.*)?$/ {
+      pending = 1
+      pending_file = FILENAME
+    }
+    END { unmatched() }
+  ' "${files[@]}"
+}
+
+# Prints the commit of the project's common checkout, or of the checkout this
+# wrapper runs from when the project has none, with the checkout's path.
+common_checkout() {
+  local dir commit
+  if [[ -e common/.git ]]; then
+    dir=common
+  else
+    dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    [[ -e "$dir/.git" ]] || return 1
+  fi
+  commit="$(git -C "$dir" rev-parse HEAD 2>/dev/null)" || return 1
+  printf '%s\t%s\n' "$commit" "$(native_path "$dir")"
+}
+
+# Returns 0 when every esphome-common remote package entry names the common
+# checkout's commit, otherwise 2 after an error message.
+check_common_pin() {
+  local refs checkout commit dir file ref
+  refs="$(common_refs)"
+  [[ -n "$refs" ]] || return 0
+  if ! command -v git >/dev/null 2>&1 || ! checkout="$(common_checkout)"; then
+    error 'an esphome-common remote package entry needs a common checkout to compare its ref with; run git submodule update --init.'
+    return 2
+  fi
+  IFS=$'\t' read -r commit dir <<<"$checkout"
+  while IFS=$'\t' read -r file ref; do
+    if [[ -z "$ref" ]]; then
+      error "$file: the esphome-common remote package entry has no ref: line right after its url: line."
+      return 2
+    fi
+    if [[ ! "$ref" =~ ^[0-9a-f]{40}$ ]]; then
+      error "$file: the esphome-common ref '$ref' is not a full 40-character commit SHA."
+      return 2
+    fi
+    if [[ "$ref" != "$commit" ]]; then
+      error "$file: the esphome-common ref $ref differs from the common checkout at $commit ($dir). Point both at the same commit."
+      return 2
+    fi
+    common_ref_file="$file" common_ref="$ref"
+  done <<<"$refs"
 }
 
 # ---- Tool cache locations -------------------------------------------------
@@ -298,6 +391,9 @@ report_environment() { # project_version
     warn 'requirements.txt has no esphome==X.Y.Z line; uvx will use the latest release.'
   fi
   report common "$(common_revision)" project
+  if [[ -n "$common_ref" ]]; then
+    report 'common ref' "${common_ref:0:7}  $common_ref_file" project
+  fi
   case "$python_source" in
     missing)
       report UV_PYTHON unknown missing

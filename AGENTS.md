@@ -10,7 +10,9 @@ its own `AGENTS.md` above them. Projects that do not use this repository only
 take the general safety and change-preservation rules here.
 
 Consumers use this repository as a `common/` submodule pinned by gitlink;
-other projects use local packages and Makefiles. Check each project's
+remote consumers also take its packages from GitHub at that same commit (see
+"Remote consumers" below). Other projects use local packages and Makefiles.
+Check each project's
 `.gitmodules`, `packages/base.yml`, and tooling rather than assuming it uses
 these wrappers. A consumer's pinned `common/` is not interchangeable with a
 separate, writable clone of this repository, which may be newer. When a
@@ -68,6 +70,66 @@ A firmware repository that uses common has this layout:
 Individual projects deviate where their hardware or upstream origin requires it.
 Read the project's actual files before applying this layout to them.
 
+## Remote consumers
+
+A remote consumer is a project whose packages also work as ESPHome remote
+packages, so that a dashboard configuration can take them from GitHub
+(`github://` or `url:` packages) without cloning. ESPHome fetches a remote
+package as a shallow clone without submodules, so `common/` is empty there and
+`!secret` is not available to shared packages. A remote consumer differs from
+the layout above in four ways:
+
+- `packages/base.yml` takes the shared packages as one remote package entry
+  instead of the `../common/packages/` includes, in exactly this shape. The
+  `url:` line is followed directly by the `ref:` line, because the wrappers
+  read the entry line by line:
+
+  ```yaml
+  packages:
+    common:
+      url: https://github.com/peeter123/esphome-common
+      ref: <full 40-character SHA of the common gitlink>
+      refresh: never
+      files:
+        - packages/common.yml
+        - packages/project.yml
+        - packages/heap-min.yml
+        - packages/heap-fragmentation.yml
+  ```
+
+  The `files` list follows the same rules as the includes above
+  (`heap-fragmentation.yml` on ESP32 or ESP8266, `psram-free.yml` only with
+  `psram`). The ref is the commit of the `common` gitlink; both wrappers stop
+  with exit code 2 when an entry names another commit, an abbreviated SHA, or
+  no ref.
+  ESPHome fetches a commit only by its full SHA, and `refresh: never` fits an
+  immutable commit: ESPHome fetches it once into its cache, and later
+  validation works offline.
+- `packages/base.yml` reads no secret. It declares `api:` without encryption,
+  `ota:` as a list with one `- platform: esphome` entry with `id: ota_esphome`,
+  and `wifi:` with `id: wifi_id` and `ap: {}`.
+- Each entrypoint includes `credentials: !include common/packages/credentials.yml`
+  right after `base`. It adds the API and OTA encryption keys
+  (`api_encryption_key`), `wifi_ssid`, `wifi_password` and
+  `wifi_hotspot_password`; OTA through `!extend ota_esphome`, because `ota` is
+  a list. Project-specific secrets stay in the entrypoints. A dashboard
+  configuration supplies its own API key and Wi-Fi credentials, as ESPHome's
+  adoption flow writes them, and does not include this file; without its own
+  OTA key and hotspot password, OTA has no key and the fallback hotspot is open.
+- Packages refer to the project's own components by a path relative to the
+  package file, such as `source: ../../components` from `packages/<group>/`,
+  never by a `github://` source. ESPHome 2026.9 and later resolve a path that
+  does not exist relative to the configuration next to the YAML file that
+  declares it, so the YAML and the C++ always come from one checkout, both in a
+  working tree and in a remote clone. Choose a path that does not exist relative
+  to the configuration directory.
+
+Remote consumers pin commits on this repository's `master`, so `master` is
+never rewritten (no force push, no history rewrite). To give a remote consumer
+new shared packages, commit and push here first (with the user's
+authorization), then move the consumer's gitlink and its `ref:` together in
+one commit. Its first validation of a new commit needs network access.
+
 ## Project version
 
 - `packages/project.yml` sets `esphome.project.version` to `${project_version}`,
@@ -93,9 +155,15 @@ Read the project's actual files before applying this layout to them.
 - `packages/psram-free.yml`: free PSRAM. Requires `debug`, ESP32, and a
   configured `psram` component; include it only for boards with PSRAM.
 - `packages/project.yml`: project metadata; consumers supply `project_name`.
+- `packages/credentials.yml`: the `!secret` lines of a remote consumer's local
+  entrypoints (see "Remote consumers"). Requires `id: ota_esphome` on the
+  consumer's OTA entry.
 - `bin/esphome` (POSIX shells) and `bin/esphome.ps1` (PowerShell): run ESPHome
   through `uvx` using the consuming project's `requirements.txt`. Run from that
-  project's root.
+  project's root. Before ESPHome starts, they compare every esphome-common
+  remote package entry in the project's root YAML and `packages/` with the
+  commit of the project's `common/` checkout (or, without one, of their own
+  checkout).
 
 The wrappers inject the date-based project version and default `CCACHE_DIR`
 to `.ccache` in the user's home directory. A consumer's pinned wrapper matches
@@ -142,10 +210,9 @@ ESPHome release. The `esphome-update` skill in `.claude/skills/` runs them.
    update needs a newer common revision.
 6. Confirm the wrapper resolves the new version with
    `uvx --with-requirements requirements.txt esphome version`, then run
-   `config` on every entrypoint (including `.dashboard.yml` variants) with
-   stdout suppressed and exit codes checked. Dashboard variants that import
-   components from GitHub validate only after the matching component changes
-   are pushed. Report warnings, and say whether each was already present
+   `config` on every entrypoint with stdout suppressed and exit codes checked.
+   A remote consumer's first validation of a pinned esphome-common commit needs
+   network access. Report warnings, and say whether each was already present
    before the update.
 7. State that `config` does not compile lambdas, and leave compiling to the
    user unless they approve it.
@@ -156,7 +223,8 @@ ESPHome release. The `esphome-update` skill in `.claude/skills/` runs them.
 
 Apply these steps when adding a firmware project or moving an existing one
 onto common. When only updating a consumer's common revision, apply steps 4,
-5, 7, and 8.
+5, 7, and 8; a remote consumer moves its `ref:` together with the gitlink, to a
+commit that is already pushed (see "Remote consumers").
 
 1. Check Git status and preserve staged, unstaged, and untracked work.
 2. From the project root, add the submodule from this repository's published
@@ -170,7 +238,9 @@ onto common. When only updating a consumer's common revision, apply steps 4,
 3. Keep `requirements.txt` as the single ESPHome pin (`esphome==X.Y.Z`). Raise
    it only when requested, following "Updating ESPHome".
 4. In `packages/base.yml`, define the four substitutions above and include
-   `common.yml`, `project.yml`, and `heap-min.yml` from `../common/packages/`.
+   `common.yml`, `project.yml`, and `heap-min.yml` from `../common/packages/`;
+   a remote consumer takes them as the remote package entry of "Remote
+   consumers" instead, and its entrypoints include `credentials.yml`.
    Check that logger, debug, network, and time dependencies are present. Delete
    the project's local `common.yml` and any local `esphome.project` block after
    checking local diagnostics for duplicate entities or IDs. If the platform or
