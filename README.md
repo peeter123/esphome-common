@@ -371,7 +371,7 @@ Before contacting any engine the tool prints a report to stderr in the style of 
 ---- esphome-preview -----------------------------------------------------------
   manifest                    project  preview/preview.json
   esphome                     project  2026.9.1
-  common                      project  28adf33  <path of the common checkout>
+  common                      project  <describe>  <path of the common checkout>
   inputs                      project  4 files
   ESPHOME_PREVIEW_DOCKER      default  docker on PATH
   docker                      found    24.0.6  <path of the CLI>
@@ -390,7 +390,7 @@ Source tags: `option` (command line), `env` (environment variable), `wrapper` (c
 
 ### Fidelity limits
 
-The preview draws LVGL at 16-bit depth through ESPHome's `snapshot` display with the same LVGL release and built-in fonts as the firmware. It does not model the panel: colour inversion, BGR order, gamma, the offsets of the visible window and the backlight are not applied, so colours and edges on the real screen can differ. Rotation is done in software by the display driver, as on the device, but nothing about the panel's own addressing is reproduced. Treat the images as layout and text checks, not colour references.
+The preview draws LVGL at 16-bit depth through ESPHome's `snapshot` display with the same LVGL release and built-in fonts as the firmware. It does not model the panel: colour inversion, BGR order, gamma, the offsets of the visible window and the backlight are not applied, so colours and edges on the real screen can differ. The `snapshot` display reports no hardware rotation, so LVGL rotates in software; a device whose display driver reports hardware rotation (for example `mipi_spi`) rotates in the panel instead, so rotated images show the layout only and nothing about the panel's own addressing, pads or offsets is reproduced. Treat the images as layout and text checks, not colour references.
 
 ## Adding or migrating a project
 
