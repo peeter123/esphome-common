@@ -164,6 +164,16 @@ one commit. Its first validation of a new commit needs network access.
   remote package entry in the project's root YAML and `packages/` with the
   commit of the project's `common/` checkout (or, without one, of their own
   checkout).
+- `bin/esphome-preview` and `bin/esphome-preview.ps1` (shims for
+  `bin/esphome-preview.py`, with `docker/preview/Dockerfile` and `tests/`):
+  render a project's `preview/` host root on a Linux Docker engine (local or
+  through a Docker context) and save PNGs, from a manifest of declared inputs
+  (never `secrets.yaml`, `.git/`, `.esphome/` or `captures/`). The tool names
+  no host and never prints an engine endpoint; `ESPHOME_PREVIEW_DOCKER` and
+  `ESPHOME_PREVIEW_CONTEXT` choose the CLI and engine. Keep it standard-library
+  only, keep exit codes non-zero with a named cause, and test with a fake
+  runner: `python -m unittest discover -s tests`. See "Display preview" in
+  `README.md`.
 
 The wrappers inject the date-based project version and default `CCACHE_DIR`
 to `.ccache` in the user's home directory. A consumer's pinned wrapper matches

@@ -11,6 +11,7 @@ Shared packages and tooling for the `esphome-*` firmware project family. Sibling
 - `packages/psram-free.yml` — optional free PSRAM, for ESP32 consumers with a configured `psram` component.
 - `packages/credentials.yml` — the API and OTA encryption keys, the Wi-Fi network and the fallback hotspot password from `secrets.yaml`, for the entrypoints of a [remote consumer](#remote-consumers).
 - `bin/esphome` / `bin/esphome.ps1` — wrapper scripts that run ESPHome via `uvx`, pinned to whatever version is in the calling project's `requirements.txt`. No local venv, no activation step, works the same on Windows/macOS/Linux as long as `uv` is installed.
+- `bin/esphome-preview` / `bin/esphome-preview.ps1` — shims for `bin/esphome-preview.py`, a Docker-based preview that renders a project's LVGL display on the `host` platform and saves PNGs (see [Display preview](#display-preview-esphome-preview)); `docker/preview/Dockerfile` is its image.
 - `docs/esphome-upgrades/` — one review per ESPHome minor release (breaking changes, C++ API changes, patch fixes), written once and checked against each project when its pin is raised.
 - `.claude/skills/esphome-update/` — Claude Code skill that runs the ESPHome update procedure in `AGENTS.md` for a consuming project.
 
@@ -293,6 +294,103 @@ For example, on Windows:
 ```
 
 Projects that do not include `packages/project.yml` keep their own metadata. Any of them that reference `${project_version}` also receive the wrapper's date substitution.
+
+## Display preview (`esphome-preview`)
+
+`bin/esphome-preview` (POSIX shells) and `bin/esphome-preview.ps1` (PowerShell) run `bin/esphome-preview.py`, a standard-library Python tool that renders a project's LVGL display on the `host` platform inside a Linux Docker container and saves one PNG per scenario. It needs no ESP32 and no native compiler on the PC. The shims pass their arguments and the tool's exit code through unchanged, and name a missing Python; the tool names a missing Docker CLI.
+
+### Prerequisites
+
+- Python 3.8 or later on `PATH`.
+- The Docker CLI and a **Linux** Docker engine: either the local Docker Desktop engine with the WSL 2 backend, or a server or VM reached through a Docker context. A Windows-container engine is refused.
+- Network access for the engine, which downloads the base image, the Debian packages, ESPHome and PlatformIO's LVGL library. The program itself runs with `--network none`.
+
+### Using a server or VM: an SSH Docker context
+
+The tool names no host. A remote engine lives only in your Docker context:
+
+1. Set up key-based SSH from the PC to the server (`ssh <user>@<server>` works without a password prompt).
+2. Add the remote user to the `docker` group on the server.
+3. Accept the server's host key once by hand: run `ssh <user>@<server>` and answer `yes`.
+4. Create the context: `docker context create <name> --docker "host=ssh://<user>@<server>"`. An alias from `~/.ssh/config` can replace `<user>@<server>`.
+5. Check it: `docker --context <name> version`.
+
+Choose it for a run with `--context <name>` or `ESPHOME_PREVIEW_CONTEXT=<name>`. The name is passed as `docker --context <name>` to every call the tool makes, so `docker context use` and other Docker commands keep their own current context. On Windows, a user environment variable (`setx ESPHOME_PREVIEW_CONTEXT <name>` or System Properties) reaches only processes started after it is set: restart the terminal and the IDE. Without either, Docker's own resolution applies (`DOCKER_HOST`, `DOCKER_CONTEXT`, then the current context).
+
+The Docker CLI is `--docker PATH`, else `ESPHOME_PREVIEW_DOCKER`, else `docker` on `PATH`; use it when the CLI is not on `PATH`.
+
+### Usage
+
+Run from the project root:
+
+```text
+esphome-preview MANIFEST [--context NAME] [--docker PATH] [--out DIR] [--timeout SECONDS] [--check-only]
+```
+
+```powershell
+common\bin\esphome-preview.ps1 preview\preview.json
+common/bin/esphome-preview preview/preview.json --context <name> --out captures/preview
+```
+
+- `MANIFEST`: the manifest JSON, for example `preview/preview.json`.
+- `--out DIR`: where the PNGs go (default `captures/preview/` in the project root, which should be git-ignored). Nothing is written there unless every scenario image arrived and converted (a write error while replacing files can leave some of them updated).
+- `--timeout SECONDS`: limit for the preview program, above 0 and at most 1000000 (default 180). On timeout the container is removed, nothing is saved, and the exit code is 7.
+- `--check-only`: validates the manifest, the `requirements.txt` pin and the input list, and never invokes Docker.
+
+Steps: read the manifest and the `esphome==X` pin from `requirements.txt`; refuse denied inputs; check that the engine answers and is Linux; build the image `esphome-preview:<pin>` from a temporary context holding only the Dockerfile (`docker/preview/Dockerfile`) and a `requirements.txt` the tool generates with the single line `esphome==<pin>` (the project's own `requirements.txt` is read for the pin and never sent); compile with `esphome compile <root>` in a container whose cache is the named volume `esphome-preview-<pin>`, with the manifest's inputs copied in using `docker cp` (no bind mounts, so a remote engine works); run the compiled program in a second container with `--network none`, after clearing its snapshot directory; copy the BMPs out, convert them to 24-bit PNGs and move them to `--out`. What reaches the engine is exactly: the manifest's inputs, the Dockerfile and that generated one-line `requirements.txt`. Containers are removed on every path; the image and the volume stay as the build cache, so later runs only recompile what changed. Remove them with `docker image rm` and `docker volume rm` on the same engine.
+
+The image and the volume are shared per ESPHome pin by every project that uses the engine. Run previews on one engine one after another: concurrent runs of projects with the same device `name` share a snapshot directory in the volume and can overwrite each other's images. Each scenario's PNG replaces its earlier file in `--out`; other files there, such as the PNGs of removed scenarios, are left alone and are not deleted.
+
+The image is built with the engine's builder. A non-default `docker buildx` builder (for example one with the `docker-container` driver) may leave the image in its own cache instead of loading it into the engine; the tool then stops with a message pointing at the builder (exit 5). Select the default builder with `docker buildx use default` and retry.
+
+Exit codes: 0 success; 1 other Docker or file error; 2 invalid manifest, pin or input, or bad usage; 3 no engine reachable; 4 engine is not Linux; 5 image build failed; 6 compile failed; 7 timeout; 8 program failed; 9 scenario image missing or invalid; 127 Docker CLI or Python missing; 130 interrupted.
+
+### Manifest
+
+```json
+{
+  "root": "preview/display-preview.yml",
+  "name": "my-device-preview",
+  "inputs": ["preview/display-preview.yml", "preview/preview_clock.h", "packages/display.yml"],
+  "scenarios": ["heating", "idle"]
+}
+```
+
+- `root`: the ESPHome root file, relative to the project root, with forward slashes. It must be one of `inputs`.
+- `name`: the `esphome: name:` of that root. It names the build and snapshot directories, and may use letters, digits, `-` and `_`.
+- `inputs`: every file the compile needs, as relative paths to files inside the project. Only these project files are sent to the engine. The tool refuses, even when declared, paths outside the project root, `secrets.yaml` anywhere, and anything under `.git/`, `.esphome/` or `captures/`.
+- `scenarios`: the `filename:` of each `snapshot.take` in the root, without `.bmp`. Each needs a BMP after the run and becomes `<scenario>.png`.
+
+By convention a project keeps the preview root, its helper headers and the manifest in a `preview/` directory, not at the repository root, which stays reserved for firmware entrypoints. The root builds for the `host` platform with a `snapshot` display (`id: disp`) and ends the program itself after the last `snapshot.take` (for example with `std::raise(SIGTERM)` in a lambda); the tool does not keep it alive or stop it.
+
+### Startup report
+
+Before contacting any engine the tool prints a report to stderr in the style of [the ESPHome wrappers](#wrapper-help-checks-and-report): a `---- esphome-preview ----` line, one line per setting with its name, source and value, then a closing line with the exit code and elapsed time (red when not 0). Colour follows the same rules: a terminal, `FORCE_COLOR`, `NO_COLOR`.
+
+```text
+---- esphome-preview -----------------------------------------------------------
+  manifest                    project  preview/preview.json
+  esphome                     project  2026.9.1
+  common                      project  28adf33  <path of the common checkout>
+  inputs                      project  4 files
+  ESPHOME_PREVIEW_DOCKER      default  docker on PATH
+  docker                      found    24.0.6  <path of the CLI>
+  ESPHOME_PREVIEW_CONTEXT     default  <name Docker resolves>
+  engine                      found    linux/amd64  24.0.6
+  image                       wrapper  esphome-preview:2026.9.1
+  volume                      wrapper  esphome-preview-2026.9.1
+  out                         default  captures/preview
+  timeout                     default  180 s
+---- esphome-preview build -----------------------------------------------------
+...
+---- esphome-preview exited 0 after 1m 12s -------------------------------------
+```
+
+Source tags: `option` (command line), `env` (environment variable), `wrapper` (chosen by the tool), `default` (not set; the value shown applies), `project` (read from the project or the common checkout), and the checks `found`, `missing` and `skipped` (the engine and CLI lines under `--check-only`; a `!` warning line follows a problem). With the default context, the line shows the name from `docker context show`, and `DOCKER_CONTEXT` and `DOCKER_HOST` get lines of their own when set, `DOCKER_HOST` only as `set (endpoint not shown)`. The tool's own report and messages never contain an endpoint URL, user or host name. Errors that the Docker CLI or `ssh` print themselves, for example when a context cannot connect, pass through unchanged and may name the host. `DOCKER_HOST` is shown whenever the effective context is `default`, including when `default` is named with `--context` or `ESPHOME_PREVIEW_CONTEXT`.
+
+### Fidelity limits
+
+The preview draws LVGL at 16-bit depth through ESPHome's `snapshot` display with the same LVGL release and built-in fonts as the firmware. It does not model the panel: colour inversion, BGR order, gamma, the offsets of the visible window and the backlight are not applied, so colours and edges on the real screen can differ. Rotation is done in software by the display driver, as on the device, but nothing about the panel's own addressing is reproduced. Treat the images as layout and text checks, not colour references.
 
 ## Adding or migrating a project
 

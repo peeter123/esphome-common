@@ -1,0 +1,16 @@
+#!/bin/sh
+# Runs esphome-preview.py (the Docker-based display preview) with the caller's
+# arguments and returns its exit code unchanged. Run from a project root; see
+# esphome-preview.py --help.
+case "$0" in
+  */*) dir="${0%/*}" ;;
+  *) dir=. ;;
+esac
+for candidate in python3 python; do
+  if command -v "$candidate" >/dev/null 2>&1 &&
+    "$candidate" -c 'import sys; sys.exit(sys.version_info < (3, 8))' >/dev/null 2>&1; then
+    exec "$candidate" "$dir/esphome-preview.py" "$@"
+  fi
+done
+echo 'esphome-preview: Python 3.8 or later not found on PATH; install Python 3 (https://www.python.org/).' >&2
+exit 127
