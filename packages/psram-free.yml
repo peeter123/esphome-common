@@ -2,4 +2,5 @@ sensor:
   - platform: debug
     psram:
       name: "PSRAM Free"
+      device_id: adapter_device
       entity_category: diagnostic

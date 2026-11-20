@@ -147,13 +147,22 @@ one commit. Its first validation of a new commit needs network access.
   frequency, device info, and reset reason), status, version, board, IP
   address, WiFi, Home Assistant time, and restart button. It requires the relevant
   logger/debug/network/time configuration in consumers; inspect their actual
-  composition.
-- `packages/heap-min.yml`: minimum free heap since boot. Requires `debug`,
-  ESP32 or LibreTiny, and ESPHome 2026.2.0 or later.
+  composition. It declares the sub-device `adapter_device`
+  (`esphome: devices:`), named by the substitution `adapter_name` (default
+  `${friendly_name} Adapter`). Each entity of this file and of the heap and
+  PSRAM packages sets `device_id: adapter_device` itself. A consumer needs a
+  `friendly_name` substitution (without one, ESPHome only warns that it could
+  not resolve all the variables and names the sub-device literally
+  `${friendly_name} Adapter`), and renames the sub-device by setting
+  `adapter_name`. `!extend` reaches only top-level list items by id, so the
+  packages place their own entities.
+- `packages/heap-min.yml`: minimum free heap since boot. Requires `common.yml`
+  (for `adapter_device`), `debug`, ESP32 or LibreTiny, and ESPHome 2026.2.0 or
+  later.
 - `packages/heap-fragmentation.yml`: heap fragmentation percentage. Requires
-  `debug` and ESP32 or ESP8266.
-- `packages/psram-free.yml`: free PSRAM. Requires `debug`, ESP32, and a
-  configured `psram` component; include it only for boards with PSRAM.
+  `common.yml` and `debug`, on ESP32 or ESP8266.
+- `packages/psram-free.yml`: free PSRAM. Requires `common.yml`, `debug`, ESP32,
+  and a configured `psram` component; include it only for boards with PSRAM.
 - `packages/project.yml`: project metadata; consumers supply `project_name`.
 - `packages/credentials.yml`: the `!secret` lines of a remote consumer's local
   entrypoints (see "Remote consumers"). Requires `id: ota_esphome` on the

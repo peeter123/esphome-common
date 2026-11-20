@@ -2,4 +2,5 @@ sensor:
   - platform: debug
     min_free:
       name: "Heap Minimum Free"
+      device_id: adapter_device
       entity_category: diagnostic

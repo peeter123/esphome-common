@@ -6,9 +6,9 @@ Shared packages and tooling for the `esphome-*` firmware project family. Sibling
 
 - `packages/common.yml` — the shared diagnostics package: WiFi signal, uptime, free heap, main loop time, CPU frequency, device info, status binary sensor, firmware version, board name, IP address, reset reason, Home Assistant time, and a restart button.
 - `packages/project.yml` — project metadata: define `project_name` in the consuming project; `project_version` defaults to `dev` for direct ESPHome calls.
-- `packages/heap-min.yml` — optional minimum free heap since boot, for ESP32 or LibreTiny consumers on ESPHome 2026.2.0 or later.
-- `packages/heap-fragmentation.yml` — optional heap fragmentation percentage, for ESP32 or ESP8266 consumers.
-- `packages/psram-free.yml` — optional free PSRAM, for ESP32 consumers with a configured `psram` component.
+- `packages/heap-min.yml` — optional minimum free heap since boot, for ESP32 or LibreTiny consumers on ESPHome 2026.2.0 or later; requires `common.yml`.
+- `packages/heap-fragmentation.yml` — optional heap fragmentation percentage, for ESP32 or ESP8266 consumers; requires `common.yml`.
+- `packages/psram-free.yml` — optional free PSRAM, for ESP32 consumers with a configured `psram` component; requires `common.yml`.
 - `packages/credentials.yml` — the API and OTA encryption keys, the Wi-Fi network and the fallback hotspot password from `secrets.yaml`, for the entrypoints of a [remote consumer](#remote-consumers).
 - `bin/esphome` / `bin/esphome.ps1` — wrapper scripts that run ESPHome via `uvx`, pinned to whatever version is in the calling project's `requirements.txt`. No local venv, no activation step, works the same on Windows/macOS/Linux as long as `uv` is installed.
 - `bin/esphome-preview` / `bin/esphome-preview.ps1` — shims for `bin/esphome-preview.py`, a Docker-based preview that renders a project's LVGL display on the `host` platform and saves PNGs (see [Display preview](#display-preview-esphome-preview)); `docker/preview/Dockerfile` is its image.
@@ -34,7 +34,7 @@ packages:
 ```
 
 This reports the boot's heap low-water mark, not just the currently free
-memory. It requires `debug` and an ESPHome version supporting `debug.min_free`
+memory. It requires `common.yml`, `debug` and an ESPHome version supporting `debug.min_free`
 (2026.2.0 or later, ESP32 or LibreTiny). It is a separate package so consumers
 on other platforms or ESPHome versions can use `packages/common.yml` without it.
 
@@ -47,9 +47,24 @@ packages:
 ```
 
 `Heap Fragmentation` reports the percentage of free heap that is not part of
-the largest free block. It requires `debug` on ESP32 or ESP8266. `PSRAM Free`
-reports free external PSRAM in bytes. It requires `debug` and a configured
+the largest free block. It requires `common.yml` and `debug` on ESP32 or ESP8266. `PSRAM Free`
+reports free external PSRAM in bytes. It requires `common.yml`, `debug` and a configured
 `psram` component on ESP32; include it only for boards that have PSRAM.
+
+## Adapter sub-device
+
+`packages/common.yml` declares the sub-device `adapter_device`. Each entity of
+`common.yml`, `heap-min.yml`, `heap-fragmentation.yml` and `psram-free.yml`
+sets `device_id: adapter_device` itself, so Home Assistant
+lists the ESP's diagnostics apart from the device's own entities. The
+sub-device is named by the substitution `adapter_name`, which defaults to
+`${friendly_name} Adapter`; the consuming project needs a `friendly_name`
+substitution (without one, ESPHome only warns that it could not resolve all
+the variables and names the sub-device literally `${friendly_name} Adapter`), and renames the sub-device by setting `adapter_name`. The heap
+and PSRAM packages require `common.yml`, which declares the sub-device they
+refer to. A consumer cannot move the nested entries (`debug`, `wifi_info`) with
+`!extend`, which reaches only top-level list items by id, so the packages
+place their own entities.
 
 ## Board diagnostic
 

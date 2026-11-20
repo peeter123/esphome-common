@@ -1,28 +1,40 @@
 substitutions:
   board_name: ${board}
+  adapter_name: ${friendly_name} Adapter
+
+esphome:
+  devices:
+    - id: adapter_device
+      name: ${adapter_name}
 
 sensor:
   - platform: wifi_signal
     name: "WiFi Signal"
+    device_id: adapter_device
     update_interval: 60s
     icon: mdi:wifi
 
   - platform: uptime
     name: "Uptime"
+    device_id: adapter_device
     update_interval: 60s
     icon: mdi:clock-outline
 
   - platform: debug
     free:
       name: "Heap Free"
+      device_id: adapter_device
     block:
       name: "Heap Largest Free Block"
+      device_id: adapter_device
       entity_category: diagnostic
     loop_time:
       name: "Main Loop Time"
+      device_id: adapter_device
       entity_category: diagnostic
     cpu_frequency:
       name: "CPU Frequency"
+      device_id: adapter_device
       entity_category: diagnostic
       unit_of_measurement: "MHz"
       filters:
@@ -31,14 +43,17 @@ sensor:
 binary_sensor:
   - platform: status
     name: "Status"
+    device_id: adapter_device
 
 text_sensor:
   - platform: version
     name: "Version"
+    device_id: adapter_device
     icon: mdi:cube-outline
 
   - platform: template
     name: "Board"
+    device_id: adapter_device
     icon: mdi:developer-board
     entity_category: diagnostic
     disabled_by_default: false
@@ -49,27 +64,33 @@ text_sensor:
     ip_address:
       id: wifi_ip_address
       name: "IP Address"
+      device_id: adapter_device
       icon: mdi:ip-network
     ssid:
       name: "WiFi SSID"
+      device_id: adapter_device
       icon: mdi:wifi
       entity_category: diagnostic
     bssid:
       name: "WiFi BSSID"
+      device_id: adapter_device
       icon: mdi:access-point
       entity_category: diagnostic
     mac_address:
       name: "WiFi MAC Address"
+      device_id: adapter_device
       icon: mdi:identifier
       entity_category: diagnostic
 
   - platform: debug
     device:
       name: "Device Info"
+      device_id: adapter_device
       icon: mdi:chip
       entity_category: diagnostic
     reset_reason:
       name: "Reset Reason"
+      device_id: adapter_device
 
 time:
   - platform: homeassistant
@@ -78,5 +99,6 @@ time:
 button:
   - platform: restart
     name: Restart
+    device_id: adapter_device
     icon: mdi:restart
     entity_category: diagnostic

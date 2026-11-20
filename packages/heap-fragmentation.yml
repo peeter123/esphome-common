@@ -2,4 +2,5 @@ sensor:
   - platform: debug
     fragmentation:
       name: "Heap Fragmentation"
+      device_id: adapter_device
       entity_category: diagnostic
